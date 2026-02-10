@@ -62,6 +62,14 @@ class TranscriptionBot:
         logger.info("Bot starter...")
         application.run_polling(allowed_updates=Update.ALL_TYPES)
     
+    def _is_private_chat(self, update: Update) -> bool:
+        """Sjekker om melding kommer fra privat chat (ikke gruppe)."""
+        chat = update.effective_chat
+        if chat and chat.type != 'private':
+            logger.warning(f"Forsøk på bruk i gruppe: {chat.type}, ID={chat.id}")
+            return False
+        return True
+    
     def _is_authorized(self, update: Update) -> bool:
         """Sjekker om bruker er autorisert."""
         user = update.effective_user
@@ -79,6 +87,14 @@ class TranscriptionBot:
     
     async def _cmd_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Håndterer /start kommando."""
+        # Sjekk at det er privat chat
+        if not self._is_private_chat(update):
+            await update.message.reply_text(
+                "⛔ Jeg fungerer kun i private chatter, ikke i grupper.\n"
+                "Start en privat samtale med meg istedenfor."
+            )
+            return
+        
         if not self._is_authorized(update):
             await update.message.reply_text(
                 "⛔ Beklager, du har ikke tilgang til denne bot-en.\n"
@@ -109,6 +125,9 @@ class TranscriptionBot:
     
     async def _handle_audio(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Håndterer voice messages og audio."""
+        if not self._is_private_chat(update):
+            return  # Ignorer gruppe-meldinger helt
+        
         if not self._is_authorized(update):
             await update.message.reply_text("⛔ Ingen tilgang.")
             return
@@ -136,6 +155,9 @@ class TranscriptionBot:
     
     async def _handle_document(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Håndterer dokument (inkludert lydfiler sendt som doc)."""
+        if not self._is_private_chat(update):
+            return  # Ignorer gruppe-meldinger helt
+        
         if not self._is_authorized(update):
             await update.message.reply_text("⛔ Ingen tilgang.")
             return
@@ -170,6 +192,9 @@ class TranscriptionBot:
     
     async def _handle_text(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Håndterer tekstmeldinger (språkvalg etc)."""
+        if not self._is_private_chat(update):
+            return  # Ignorer gruppe-meldinger helt
+        
         if not self._is_authorized(update):
             await update.message.reply_text("⛔ Ingen tilgang.")
             return
