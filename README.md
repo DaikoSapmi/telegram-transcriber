@@ -7,6 +7,8 @@ Transkribering av lydfiler via Telegram med støtte for norsk og nordsamisk.
 - 🎙️ **Mottar lydfiler** via Telegram
 - 📝 **Genererer Word-dokumenter** (.docx)
 - 🗣️ **Støtter norsk og nordsamisk** (via NbAiLab Whisper)
+- 📊 **Møtereferat** med AI (OpenAI GPT - valgfritt)
+- 🌍 **Dokument på norsk eller engelsk**
 - 👥 **Talegjenkjenning** (eksperimentelt)
 - ⏱️ **Valgfrie tidsstempler**
 - 🔒 **Sikker håndtering** (midlertidige filer slettes)
@@ -40,20 +42,25 @@ python -m src.telegram_bot
 
 ## Bruk
 
-### Standard (norsk)
-1. Send lydfil til bot-en
-2. Vent på transkripsjon
-3. Motta Word-dokument
+### 1. Send lydfil
+Send en lydfil (m4a, mp3, wav, ogg) til bot-en.
 
-### Nordsamisk
-1. Skriv "samisk" før du sender filen
-2. Send lydfilen
-3. Motta transkripsjon
+### 2. Velg format og språk
+Bot-en spør om:
+- **Format:** `1` (full transkripsjon) eller `2` (møtereferat)
+- **Dokument-språk:** `n` (norsk) eller `e` (engelsk)
+- **Valgfritt:** `tidsstempel` for tidskoder
 
-### Med tidsstempler
-1. Skriv "med tidsstempel" før du sender filen
-2. Send lydfilen
-3. Motta dokument med tidskoder
+**Eksempler:**
+- `1 n` → Full transkripsjon på norsk
+- `2 e` → Møtereferat på engelsk
+- `1 n tidsstempel` → Transkripsjon på norsk med tidskoder
+
+### 3. Motta dokument
+Bot-en sender Word-dokumentet når det er klart.
+
+### Nordsamisk lyd
+For lyd på nordsamisk, skriv "samisk" før du sender filen.
 
 ### Eksempel
 

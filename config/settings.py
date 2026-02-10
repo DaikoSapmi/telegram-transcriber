@@ -42,6 +42,11 @@ class Settings:
     # Eksempel: "123456789,987654321,@brukernavn"
     allowed_users: str = field(default_factory=lambda: os.getenv("ALLOWED_USERS", ""))
     
+    # LLM (for møtereferat)
+    openai_api_key: str = field(default_factory=lambda: os.getenv("OPENAI_API_KEY", ""))
+    llm_model: str = field(default_factory=lambda: os.getenv("LLM_MODEL", "gpt-4o-mini"))
+    llm_max_tokens: int = field(default=4000)
+    
     def get_allowed_users(self) -> set:
         """Returnerer sett med godkjente brukere."""
         if not self.allowed_users:
