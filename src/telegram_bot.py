@@ -62,8 +62,30 @@ class TranscriptionBot:
         logger.info("Bot starter...")
         application.run_polling(allowed_updates=Update.ALL_TYPES)
     
+    def _is_authorized(self, update: Update) -> bool:
+        """Sjekker om bruker er autorisert."""
+        user = update.effective_user
+        if not user:
+            return False
+        
+        user_id = str(user.id)
+        username = user.username or ""
+        
+        if not settings.is_user_allowed(user_id, username):
+            logger.warning(f"Uautorisert tilgang forsøkt: ID={user_id}, username={username}")
+            return False
+        
+        return True
+    
     async def _cmd_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Håndterer /start kommando."""
+        if not self._is_authorized(update):
+            await update.message.reply_text(
+                "⛔ Beklager, du har ikke tilgang til denne bot-en.\n"
+                "Kontakt administrator hvis du mener dette er en feil."
+            )
+            return
+        
         await update.message.reply_text(
             "🎙️ Velkommen til Transkriberingsbot!\n\n"
             "Send meg en lydfil (m4a, mp3, wav, ogg) så transkriberer jeg den til et Word-dokument.\n\n"
@@ -87,6 +109,10 @@ class TranscriptionBot:
     
     async def _handle_audio(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Håndterer voice messages og audio."""
+        if not self._is_authorized(update):
+            await update.message.reply_text("⛔ Ingen tilgang.")
+            return
+        
         try:
             # Bestem språk fra tidligere meldinger
             language = self._detect_language(context)
@@ -110,6 +136,10 @@ class TranscriptionBot:
     
     async def _handle_document(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Håndterer dokument (inkludert lydfiler sendt som doc)."""
+        if not self._is_authorized(update):
+            await update.message.reply_text("⛔ Ingen tilgang.")
+            return
+        
         document = update.message.document
         
         # Sjekk at det er en lydfil
@@ -140,6 +170,10 @@ class TranscriptionBot:
     
     async def _handle_text(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Håndterer tekstmeldinger (språkvalg etc)."""
+        if not self._is_authorized(update):
+            await update.message.reply_text("⛔ Ingen tilgang.")
+            return
+        
         text = update.message.text.lower()
         
         if "samisk" in text or "nordsamisk" in text:

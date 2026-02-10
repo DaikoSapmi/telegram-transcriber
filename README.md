@@ -97,9 +97,28 @@ Telegram → telegram_bot.py → transcriber.py → document_generator.py → Wo
 
 ## Sikkerhet
 
+- **Brukerautorisering**: Kun godkjente Telegram-brukere kan bruke bot-en
 - Midlertidige filer slettes etter prosessering
 - Ingen lagring i skyen
 - Lokalt prosessering kun
+
+### Sette opp autorisering
+
+I `.env` filen, legg til godkjente brukere:
+
+```env
+# Kommaseparert liste med bruker-ID-er og/eller brukernavn
+ALLOWED_USERS=123456789,@dittbrukernavn,987654321
+```
+
+**Finne din bruker-ID:**
+1. Send melding til bot-en @userinfobot
+2. Den svarer med din ID
+
+**Eller bruk brukernavn:**
+- Format: `@brukernavn` (uten @ i .env: `brukernavn`)
+
+**Viktig:** Hvis `ALLOWED_USERS` er tom, tillates alle (ikke anbefalt i produksjon).
 
 ## Krav
 

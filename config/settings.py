@@ -37,6 +37,41 @@ class Settings:
     # Security
     delete_temp_files: bool = field(default=True)
     
+    # User authorization
+    # Kommaseparert liste med godkjente Telegram bruker-ID-er eller brukernavn
+    # Eksempel: "123456789,987654321,@brukernavn"
+    allowed_users: str = field(default_factory=lambda: os.getenv("ALLOWED_USERS", ""))
+    
+    def get_allowed_users(self) -> set:
+        """Returnerer sett med godkjente brukere."""
+        if not self.allowed_users:
+            return set()  # Tom = alle tillatt (ikke anbefalt i produksjon)
+        
+        users = set()
+        for user in self.allowed_users.split(","):
+            user = user.strip()
+            if user:
+                users.add(user)
+        return users
+    
+    def is_user_allowed(self, user_id: str, username: str = "") -> bool:
+        """Sjekker om bruker er godkjent."""
+        allowed = self.get_allowed_users()
+        
+        # Hvis ingen restriksjoner, tillat alle
+        if not allowed:
+            return True
+        
+        # Sjekk bruker-ID
+        if str(user_id) in allowed:
+            return True
+        
+        # Sjekk brukernavn
+        if username and f"@{username}" in allowed:
+            return True
+        
+        return False
+    
     def validate(self) -> None:
         """Validerer at nødvendige innstillinger er satt."""
         if not self.telegram_bot_token:
