@@ -12,6 +12,26 @@ Denne guiden hjelper deg med å sette opp Telegram Transcriber lokalt.
 - [ ] Minst 8GB RAM (16GB+ anbefalt)
 - [ ] 10GB ledig diskplass (Whisper-modellen er stor)
 - [ ] Telegram-konto
+- [ ] ffmpeg installert (se under)
+
+### Installere ffmpeg (påkrevd):
+
+**macOS:**
+```bash
+brew install ffmpeg
+```
+
+**Ubuntu/Debian:**
+```bash
+sudo apt-get update
+sudo apt-get install ffmpeg
+```
+
+**Windows:**
+1. Last ned fra https://ffmpeg.org/download.html
+2. Legg til i PATH
+
+**Hvorfor?** ffmpeg trengs for å konvertere lydfiler (m4a, mp3, etc.) til format som Whisper forstår.
 
 ---
 

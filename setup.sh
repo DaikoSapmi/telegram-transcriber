@@ -18,6 +18,21 @@ fi
 PYTHON_VERSION=$(python3 --version | cut -d' ' -f2 | cut -d'.' -f1-2)
 echo "✅ Python funnet: $PYTHON_VERSION"
 
+# Sjekk ffmpeg
+if ! command -v ffmpeg &> /dev/null; then
+    echo ""
+    echo "❌ ffmpeg er ikke installert (påkrevd for lydfil-behandling)"
+    echo ""
+    echo "Installer:"
+    echo "  macOS:   brew install ffmpeg"
+    echo "  Ubuntu:  sudo apt-get install ffmpeg"
+    echo "  Windows: https://ffmpeg.org/download.html"
+    echo ""
+    exit 1
+fi
+
+echo "✅ ffmpeg funnet"
+
 # Sjekk om virtual environment finnes
 if [ ! -d "venv" ]; then
     echo "📦 Oppretter virtual environment..."
