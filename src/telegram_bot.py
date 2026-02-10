@@ -123,7 +123,7 @@ class TranscriptionBot:
             file_name = f"audio_{file_obj.file_id}.ogg"
             
             await update.message.reply_text("⏳ Laster ned fil...")
-            file_path = await self._download_file(file_obj, context)
+            file_path = await self._download_file(file_obj, context, suffix=".ogg")
             
             # Transkriber
             await self._process_transcription(
@@ -207,6 +207,8 @@ class TranscriptionBot:
     ) -> None:
         """Prosesserer transkribering og sender resultat."""
         try:
+            logger.info(f"Starter transkribering: {file_name} på språk: {language}")
+            
             # Transkriber
             await update.message.reply_text(
                 f"🎙️ Transkriberer på {self._get_language_name(language)}...\n"
@@ -218,6 +220,8 @@ class TranscriptionBot:
                 language=language,
                 include_timestamps=include_timestamps
             )
+            
+            logger.info(f"Transkribering fullført: {len(segments)} segmenter")
             
             # Generer dokument
             await update.message.reply_text("📝 Genererer Word-dokument...")
@@ -250,11 +254,31 @@ class TranscriptionBot:
             logger.error(f"Feil ved transkribering: {e}")
             await update.message.reply_text(f"❌ Feil under transkribering: {str(e)}")
     
-    async def _download_file(self, file_obj, context: ContextTypes.DEFAULT_TYPE) -> str:
+    async def _download_file(self, file_obj, context: ContextTypes.DEFAULT_TYPE, suffix: str = ".tmp") -> str:
         """Laster ned fil fra Telegram."""
         file = await context.bot.get_file(file_obj.file_id)
-        file_path = self.temp_dir / f"{file_obj.file_id}.tmp"
+        
+        # Bruk riktig filendelse basert på type
+        if hasattr(file_obj, 'mime_type'):
+            mime_type = file_obj.mime_type or ""
+            logger.info(f"MIME-type: {mime_type}")
+            if "ogg" in mime_type:
+                suffix = ".ogg"
+            elif "mp3" in mime_type:
+                suffix = ".mp3"
+            elif "mp4" in mime_type:
+                suffix = ".m4a"
+            elif "wav" in mime_type:
+                suffix = ".wav"
+        
+        file_path = self.temp_dir / f"{file_obj.file_id}{suffix}"
         await file.download_to_drive(file_path)
+        
+        # Logg filinfo
+        import os
+        file_size = os.path.getsize(file_path)
+        logger.info(f"Fil lastet ned: {file_path} ({file_size} bytes)")
+        
         return str(file_path)
     
     def _detect_language(self, context: ContextTypes.DEFAULT_TYPE) -> str:

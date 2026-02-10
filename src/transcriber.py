@@ -100,16 +100,42 @@ class Transcriber:
         try:
             from pydub import AudioSegment
             
-            # Last audio
-            audio = AudioSegment.from_file(audio_path)
+            logger.info(f"Laster audio fra: {audio_path}")
             
-            # Konverter til mono, 16kHz
-            audio = audio.set_channels(1)
-            audio = audio.set_frame_rate(16000)
+            # Sjekk filstørrelse
+            file_size = os.path.getsize(audio_path)
+            logger.info(f"Filstørrelse: {file_size} bytes")
+            
+            # Prøv å laste med format-deteksjon
+            try:
+                audio = AudioSegment.from_file(audio_path)
+                logger.info(f"Audio lastet: {len(audio)}ms, {audio.channels} kanal(er), {audio.frame_rate}Hz")
+            except Exception as load_error:
+                logger.warning(f"Standard lasting feilet: {load_error}")
+                # Prøv eksplisitt OGG for Telegram voice messages
+                if audio_path.endswith('.ogg') or audio_path.endswith('.tmp'):
+                    logger.info("Prøver eksplisitt OGG-format...")
+                    audio = AudioSegment.from_file(audio_path, format="ogg")
+                else:
+                    raise
+            
+            # Konverter til mono, 16kHz (kreves av Whisper)
+            if audio.channels != 1:
+                logger.info("Konverterer til mono...")
+                audio = audio.set_channels(1)
+            
+            if audio.frame_rate != 16000:
+                logger.info(f"Resampler fra {audio.frame_rate}Hz til 16000Hz...")
+                audio = audio.set_frame_rate(16000)
             
             # Konverter til numpy array
             samples = np.array(audio.get_array_of_samples(), dtype=np.float32)
-            samples = samples / 32768.0  # Normaliser til [-1, 1]
+            
+            # Normaliser basert på sample width
+            max_value = float(2 ** (audio.sample_width * 8 - 1))
+            samples = samples / max_value
+            
+            logger.info(f"Audio konvertert: {len(samples)} samples, range [{samples.min():.3f}, {samples.max():.3f}]")
             
             return samples
             
