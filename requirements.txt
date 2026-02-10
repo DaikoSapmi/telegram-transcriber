@@ -21,8 +21,13 @@ python-dotenv==1.0.0
 # Logging
 structlog==24.1.0
 
-# LLM (for møtereferat)
-openai==1.10.0
+# LLM Providers (installer de du trenger)
+openai>=1.10.0         # OpenAI, Kimi (Moonshot)
+anthropic>=0.18.0      # Anthropic Claude
+google-generativeai>=0.3.0  # Google Gemini
+
+# Lokal LLM (Ollama)
+# ollama>=0.1.0        # Uncomment hvis du bruker Ollama
 
 # Testing
 pytest==7.4.4

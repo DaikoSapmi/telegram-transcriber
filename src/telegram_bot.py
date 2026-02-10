@@ -114,7 +114,7 @@ class TranscriptionBot:
     
     async def _cmd_help(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Håndterer /help kommando."""
-        summary_status = "✅ Tilgjengelig" if self.summarizer.is_available() else "❌ Krever OPENAI_API_KEY"
+        summary_status = "✅ Tilgjengelig" if self.summarizer.is_available() else "❌ Konfigurer LLM i .env"
         
         await update.message.reply_text(
             "📖 Hjelp\n\n"
@@ -131,6 +131,9 @@ class TranscriptionBot:
             "⏱️ 'tidsstempel' = med tidskoder\n\n"
             "*Eksempel:* 1 n (transkripsjon på norsk)\n"
             "*Eksempel:* 2 e tidsstempel (referat på engelsk)\n\n"
+            "*LLM for møtereferat:*\n"
+            "Støtter: OpenAI, Anthropic, Gemini, Kimi, Ollama\n"
+            "Anbefalt: Ollama (gratis, lokal, privat)\n\n"
             "Tips: Skriv 'samisk' før fil for nordsamisk lyd"
         )
     

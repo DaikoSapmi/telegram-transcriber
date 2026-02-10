@@ -42,10 +42,29 @@ class Settings:
     # Eksempel: "123456789,987654321,@brukernavn"
     allowed_users: str = field(default_factory=lambda: os.getenv("ALLOWED_USERS", ""))
     
-    # LLM (for møtereferat)
-    openai_api_key: str = field(default_factory=lambda: os.getenv("OPENAI_API_KEY", ""))
-    llm_model: str = field(default_factory=lambda: os.getenv("LLM_MODEL", "gpt-4o-mini"))
+    # LLM (for møtereferat) - Støtter: openai, anthropic, gemini, kimi, ollama
+    llm_provider: str = field(default_factory=lambda: os.getenv("LLM_PROVIDER", "auto"))  # auto = velg første tilgjengelige
     llm_max_tokens: int = field(default=4000)
+    
+    # OpenAI
+    openai_api_key: str = field(default_factory=lambda: os.getenv("OPENAI_API_KEY", ""))
+    openai_model: str = field(default_factory=lambda: os.getenv("OPENAI_MODEL", "gpt-4o-mini"))
+    
+    # Anthropic Claude
+    anthropic_api_key: str = field(default_factory=lambda: os.getenv("ANTHROPIC_API_KEY", ""))
+    anthropic_model: str = field(default_factory=lambda: os.getenv("ANTHROPIC_MODEL", "claude-3-haiku-20240307"))
+    
+    # Google Gemini
+    gemini_api_key: str = field(default_factory=lambda: os.getenv("GEMINI_API_KEY", ""))
+    gemini_model: str = field(default_factory=lambda: os.getenv("GEMINI_MODEL", "gemini-1.5-flash"))
+    
+    # Kimi (Moonshot AI)
+    kimi_api_key: str = field(default_factory=lambda: os.getenv("KIMI_API_KEY", ""))
+    kimi_model: str = field(default_factory=lambda: os.getenv("KIMI_MODEL", "kimi-k2.5"))
+    
+    # Ollama (lokal LLM)
+    ollama_host: str = field(default_factory=lambda: os.getenv("OLLAMA_HOST", "http://localhost:11434"))
+    ollama_model: str = field(default_factory=lambda: os.getenv("OLLAMA_MODEL", "llama3.2"))
     
     def get_allowed_users(self) -> set:
         """Returnerer sett med godkjente brukere."""

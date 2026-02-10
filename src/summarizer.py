@@ -3,9 +3,9 @@
 import os
 import logging
 from typing import Optional, List, Dict
-import openai
 
 from config.settings import settings
+from src.llm_provider import LLMProviderFactory
 
 logger = logging.getLogger(__name__)
 
@@ -14,19 +14,21 @@ class Summarizer:
     """Genererer møtereferat fra transkripsjon ved hjelp av LLM."""
     
     def __init__(self):
-        self.api_key = settings.openai_api_key
-        self.model = settings.llm_model
         self.max_tokens = settings.llm_max_tokens
+        self.preferred_provider = getattr(settings, 'llm_provider', None)
         
-        if self.api_key:
-            openai.api_key = self.api_key
-            logger.info(f"Summarizer initialisert med modell: {self.model}")
+        # Velg beste tilgjengelige provider
+        self.provider = LLMProviderFactory.get_provider(self.preferred_provider)
+        
+        if self.provider:
+            logger.info(f"Summarizer initialisert med provider: {self.provider.__class__.__name__}")
         else:
-            logger.warning("Ingen OPENAI_API_KEY satt - møtereferat-funksjon vil ikke fungere")
+            logger.warning("Ingen LLM provider tilgjengelig - møtereferat-funksjon vil ikke fungere")
+            logger.info("Tilgjengelige providere: " + ", ".join(LLMProviderFactory.list_available()))
     
     def is_available(self) -> bool:
         """Sjekker om LLM er tilgjengelig."""
-        return bool(self.api_key)
+        return self.provider is not None
     
     def generate_meeting_summary(
         self, 
@@ -50,7 +52,7 @@ class Summarizer:
         if not self.is_available():
             raise ValueError("LLM ikke tilgjengelig - sjekk OPENAI_API_KEY")
         
-        logger.info(f"Genererer møtereferat på {language}...")
+        logger.info(f"Genererer møtereferat på {language} med {self.provider.__class__.__name__}...")
         
         # Velg prompt basert på språk
         if language == "en":
@@ -62,17 +64,12 @@ class Summarizer:
         user_prompt = self._build_user_prompt(transcript, meeting_title, duration_minutes)
         
         try:
-            response = openai.chat.completions.create(
-                model=self.model,
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt}
-                ],
-                max_tokens=self.max_tokens,
-                temperature=0.3
+            content = self.provider.generate(
+                system_prompt=system_prompt,
+                user_prompt=user_prompt,
+                max_tokens=self.max_tokens
             )
             
-            content = response.choices[0].message.content
             logger.info("Møtereferat generert vellykket")
             
             # Parse svaret
