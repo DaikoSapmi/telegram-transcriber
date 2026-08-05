@@ -1,5 +1,8 @@
 from pathlib import Path
 
+import numpy as np
+import pytest
+
 from config.settings import Settings
 from src.transcriber import Transcriber
 from src.transcription_types import TranscriptSegment
@@ -32,6 +35,59 @@ def test_timestamp_midpoint_assigns_overlap_to_one_core():
     ]
     kept = Transcriber._segments_for_core(segments, 10.0, 20.0, is_last=False)
     assert [segment.text for segment in kept] == ["before", "inside"]
+
+
+def test_language_generation_options_preserve_sme_model_defaults():
+    assert Transcriber._language_generation_options("sme") == {}
+    assert Transcriber._language_generation_options("no") == {
+        "task": "transcribe",
+        "language": "no",
+    }
+    assert Transcriber._language_generation_options("auto") == {"task": "transcribe"}
+
+
+def test_longform_processor_explicitly_disables_truncation():
+    assert Transcriber._processor_options(474.0) == {
+        "truncation": False,
+        "padding": "longest",
+    }
+    assert Transcriber._processor_options(30.0) == {
+        "truncation": True,
+        "padding": "max_length",
+    }
+
+
+def test_longform_input_guard_rejects_a_30_second_feature_window():
+    with pytest.raises(RuntimeError, match="30-sekundersvindu"):
+        Transcriber._assert_longform_input_coverage(474.0, 3000, 1500)
+    Transcriber._assert_longform_input_coverage(474.0, 47404, 1500)
+
+
+def test_longform_output_guard_rejects_audible_untranscribed_tail():
+    transcriber = Transcriber(Settings(sample_rate=10))
+    audible = np.full(1000, 0.02, dtype=np.float32)
+    truncated = [TranscriptSegment("Álgu.", 0.0, 20.0)]
+
+    with pytest.raises(RuntimeError, match="trunkert transkripsjon"):
+        transcriber._assert_longform_output_coverage(
+            truncated,
+            audible,
+            offset_seconds=0.0,
+            duration=100.0,
+        )
+
+    transcriber._assert_longform_output_coverage(
+        truncated,
+        np.zeros_like(audible),
+        offset_seconds=0.0,
+        duration=100.0,
+    )
+    transcriber._assert_longform_output_coverage(
+        [TranscriptSegment("Olles.", 0.0, 80.0)],
+        audible,
+        offset_seconds=0.0,
+        duration=100.0,
+    )
 
 
 def test_checkpoint_roundtrip_and_source_validation(tmp_path: Path):

@@ -1,4 +1,4 @@
-# Telegram Transcriber
+# Ailo – Telegram Transcriber
 
 Lokal, presisjonsorientert transkribering av lange norske og nordsamiske lydopptak via Telegram.
 
@@ -8,11 +8,15 @@ Telegram → lokal Bot API-server → SQLite-kø → FFmpeg → Whisper → TXT/
 
 Selve talegjenkjenningen skjer lokalt på Mac-en. Lydfilen går fortsatt via Telegrams servere når brukeren sender den til boten.
 
+Ailo leverer ren Whisper-transkripsjon på samme språk som opptaket. Det finnes
+ingen kobling til Gemini eller en annen LLM, og resultatet blir ikke oversatt,
+forkortet, oppsummert eller språkvasket.
+
 ## Dette er implementert
 
 - lokal Telegram Bot API-server for nedlasting uten den ordinære 20 MB-grensen
 - private samtaler og brukerautorisasjon
-- knapper for norsk, nordsamisk og eksperimentell automatisk modus
+- entydige knapper for norsk tale → norsk tekst og nordsamisk tale → nordsamisk tekst
 - knapper for TXT, Word eller begge
 - SQLite-kø med én transkripsjon om gangen
 - `/status`, `/cancel` og `/help`
@@ -20,6 +24,7 @@ Selve talegjenkjenningen skjer lokalt på Mac-en. Lydfilen går fortsatt via Tel
 - FFmpeg-normalisering til 16 kHz mono PCM
 - behovsstyrt modellbytte, slik at bare én stor modell er lastet
 - sekvensiell Whisper-langform med tidsstempler, kontekst og temperatur-fallback
+- eksplisitt vern mot 30-sekunders inputtrunkering og tidlig avbrutt resultat
 - 3 sekunders overlapp og deduplisering med tidsstempler og tekst
 - MPS på Apple Silicon med automatisk CPU-fallback
 - ren UTF-8 TXT og Word med tidsstemplede segmenter
@@ -35,9 +40,15 @@ Første versjon inneholder bevisst ikke møtereferat, LLM-korrektur, oversettels
 |---|---|
 | Norsk | `NbAiLab/nb-whisper-large` |
 | Nordsamisk | `NbAiLab/whisper-large-sme` |
-| Automatisk | norsk modell uten tvunget språk, eksperimentelt |
 
-Nordsamiskmodellen er finjustert fra Whisper Large v2. Den bruker sin egen generasjonskonfigurasjon; `sme` sendes ikke inn som et opprinnelig Whisper-språktoken.
+Språkvalget beskriver språket som faktisk tales i opptaket, ikke ønsket
+oversettelsesspråk. Nordsamiskmodellen er finjustert fra Whisper Large v2 og
+bruker sin egen generasjonskonfigurasjon. Verken `sme`, norsk språkforcing
+eller en generell task-override sendes til SME-modellen.
+
+Ved lang lyd slås feature-extractor-trunkering eksplisitt av. Hvis Whisper
+likevel stopper mens det fortsatt finnes tydelig hørbar lyd, feiler jobben i
+stedet for å levere en avkortet transkripsjon.
 
 ## Krav
 
@@ -151,10 +162,12 @@ Den roterende serverloggen ligger som standard i `~/Library/Logs/telegram-bot-ap
 ## Telegram-forløp
 
 1. Send en lydfil.
-2. Velg `Norsk`, `Nordsamisk` eller `Automatisk – eksperimentell`.
+2. Velg språket som faktisk snakkes: `Norsk tale → norsk tekst` eller
+   `Nordsamisk tale → nordsamisk tekst`.
 3. Velg `TXT`, `Word` eller `Begge`.
 4. Bot-en viser køplass og sender fremdriftsoppdateringer.
-5. Resultatfilene sendes tilbake og kildelyden slettes lokalt.
+5. Hele den rene Whisper-transkripsjonen sendes tilbake uten oversettelse,
+   språkvask eller sammendrag, og kildelyden slettes lokalt.
 
 `/cancel <jobb-id>` kan brukes for en bestemt jobb. Uten ID avbrytes brukerens nyeste aktive jobb. Med nyere Transformers-versjoner kontrolleres avbrudd også mellom Whispers interne segmenter; ellers stoppes jobben mellom hoveddeler.
 

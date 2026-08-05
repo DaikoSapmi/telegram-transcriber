@@ -15,7 +15,7 @@ from src.transcriber import Transcriber
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("audio", type=Path, help="Audio file to transcribe")
-    parser.add_argument("--language", choices=("no", "sme", "auto"), default="no")
+    parser.add_argument("--language", choices=("no", "sme"), default="no")
     parser.add_argument("--output", choices=("txt", "docx", "both"), default="both")
     args = parser.parse_args()
 

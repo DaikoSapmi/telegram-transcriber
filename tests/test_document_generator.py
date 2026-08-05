@@ -27,4 +27,26 @@ def test_txt_is_plain_and_docx_contains_real_metadata(tmp_path: Path):
     assert "NbAiLab/whisper-large-sme" in document_text
     assert "Nordsamisk" in document_text
     assert "[00:01:02]" in document_text
+    assert "Ren transkripsjon" in document_text
+    assert "uten oversettelse, språkvask eller sammendrag" in document_text
     assert "Person 1" not in document_text
+
+
+def test_txt_preserves_every_raw_segment_without_shortening(tmp_path: Path):
+    segments = [
+        TranscriptSegment(f"sámegiellasátni{i}", float(i), float(i + 1))
+        for i in range(800)
+    ]
+    result = TranscriptionResult(
+        segments=segments,
+        duration_seconds=800.0,
+        model_name="NbAiLab/whisper-large-sme",
+        language="sme",
+    )
+
+    path = DocumentGenerator(tmp_path).generate(result, "gulahallan.m4a", "txt")[0]
+    delivered = path.read_text(encoding="utf-8")
+
+    assert len(delivered.split()) == 800
+    assert "sámegiellasátni0" in delivered
+    assert "sámegiellasátni799" in delivered

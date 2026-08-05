@@ -34,6 +34,12 @@ logger = logging.getLogger(__name__)
 class TranscriptionBot:
     """Responsive Telegram bot backed by one persistent local worker."""
 
+    PURE_TRANSCRIPTION_NOTE: ClassVar[str] = (
+        "Ailo lager bare en ren Whisper-transkripsjon på samme språk som opptaket. "
+        "Ingen oversettelse, språkvask eller sammendrag blir lagt til."
+    )
+    FRONTEND_LANGUAGES: ClassVar[frozenset[str]] = frozenset({"no", "sme"})
+
     AUDIO_EXTENSIONS: ClassVar[frozenset[str]] = frozenset(
         {
             ".aac",
@@ -131,9 +137,11 @@ class TranscriptionBot:
         if not await self._authorize_message(update):
             return
         await update.effective_message.reply_text(
-            "🎙️ Lokal transkriberingsbot\n\n"
-            "Send en lydfil. Du velger deretter talespråk og om resultatet skal være TXT, Word eller begge. "
-            "Transkripsjonen kjøres lokalt på Mac-en.\n\n"
+            "🎙️ Bures! Jeg er Ailo, en lokal transkriberingsbot.\n\n"
+            "Send en lydfil og velg språket som faktisk snakkes i opptaket. "
+            "Norsk tale gir norsk tekst, og nordsamisk tale gir nordsamisk tekst.\n\n"
+            f"{self.PURE_TRANSCRIPTION_NOTE}\n\n"
+            "Talegjenkjenningen kjøres lokalt på Mac-en.\n\n"
             "/status – vis aktive jobber\n"
             "/cancel – avbryt siste aktive jobb\n"
             "/help – vis hjelp"
@@ -151,10 +159,12 @@ class TranscriptionBot:
         )
         await update.effective_message.reply_text(
             "Send m4a, mp3, wav, ogg, opus, flac, aac eller mp4.\n\n"
-            "Språk:\n"
-            "• Norsk – NbAiLab/nb-whisper-large\n"
-            "• Nordsamisk – NbAiLab/whisper-large-sme\n"
-            "• Automatisk – eksperimentell\n\n"
+            "Velg språket som faktisk snakkes i opptaket:\n"
+            "• Norsk tale → norsk transkripsjon\n"
+            "• Nordsamisk tale → nordsamisk transkripsjon\n\n"
+            "Språkvalget velger Whisper-modell; det er ikke et valg av "
+            "oversettelsesspråk.\n\n"
+            f"{self.PURE_TRANSCRIPTION_NOTE}\n\n"
             "Jobbene kjøres én om gangen og overlever omstart. Bruk /status for fremdrift og "
             "/cancel for å avbryte.\n\n"
             f"{local_note}"
@@ -301,7 +311,7 @@ class TranscriptionBot:
                 source_path=str(destination),
             )
             await notice.edit_text(
-                f"✅ Fil mottatt: {filename}\n\nVelg talespråk:",
+                self._language_prompt(filename),
                 reply_markup=self._language_keyboard(job.id),
             )
         except Exception:
@@ -326,6 +336,12 @@ class TranscriptionBot:
             return
 
         if action == "lang":
+            if value not in self.FRONTEND_LANGUAGES:
+                await query.edit_message_text(
+                    "Dette eldre språkvalget støttes ikke lenger. "
+                    "Send lydfilen på nytt og velg norsk eller nordsamisk tale."
+                )
+                return
             job = self.queue.set_language(job_id, update.effective_user.id, value)
             if not job:
                 await query.edit_message_text(
@@ -334,7 +350,8 @@ class TranscriptionBot:
                 return
             await query.edit_message_text(
                 f"✅ Fil mottatt: {job.original_filename}\n"
-                f"🗣️ Talespråk: {self.config.get_language_name(value)}\n\n"
+                f"🗣️ {self._language_route(value)}\n"
+                "📝 Ren transkripsjon uten oversettelse eller språkvask.\n\n"
                 "Velg resultat:",
                 reply_markup=self._output_keyboard(job.id),
             )
@@ -349,9 +366,10 @@ class TranscriptionBot:
         position = self.queue.position(job.id) or 1
         await query.edit_message_text(
             f"✅ Fil mottatt: {job.original_filename}\n"
-            f"🗣️ Talespråk: {self.config.get_language_name(job.language or 'no')}\n"
+            f"🗣️ {self._language_route(job.language or 'no')}\n"
             f"📄 Resultat: {self._output_name(value)}\n"
             f"📦 Plass i køen: {position}\n\n"
+            "Ailo leverer hele den rene Whisper-transkripsjonen uten etterbehandling.\n"
             f"Jobb-ID: {job.id}"
         )
         if self.worker_wakeup:
@@ -410,7 +428,8 @@ class TranscriptionBot:
         try:
             progress_message = await application.bot.send_message(
                 job.chat_id,
-                f"🔊 Starter transkribering av {job.original_filename} …",
+                f"🔊 Starter ren transkripsjon av {job.original_filename} …\n"
+                f"{self._language_route(job.language or 'no')}",
             )
             result_paths = await asyncio.to_thread(self.processor.process, job, report)
             if self.queue.is_cancel_requested(job.id):
@@ -418,8 +437,9 @@ class TranscriptionBot:
             await progress_message.edit_text("📤 Sender resultat …")
             for index, path in enumerate(result_paths):
                 caption = (
-                    f"✅ Ferdig: {job.original_filename}\n"
-                    f"Talespråk: {self.config.get_language_name(job.language or 'no')}"
+                    f"✅ Ren transkripsjon ferdig: {job.original_filename}\n"
+                    f"{self._language_route(job.language or 'no')}\n"
+                    "Ingen oversettelse, språkvask eller sammendrag."
                     if index == 0
                     else None
                 )
@@ -437,7 +457,7 @@ class TranscriptionBot:
             except Exception:
                 logger.exception("Opprydding etter fullført jobb %s feilet", job.id)
             with suppress(TelegramError):
-                await progress_message.edit_text("✅ Ferdig")
+                await progress_message.edit_text("✅ Ren transkripsjon ferdig")
         except TranscriptionCancelled:
             logger.info("Jobb %s ble avbrutt", job.id)
             self.queue.mark_cancelled(job.id)
@@ -510,20 +530,38 @@ class TranscriptionBot:
     def _language_keyboard(job_id: str) -> InlineKeyboardMarkup:
         return InlineKeyboardMarkup(
             [
-                [InlineKeyboardButton("Norsk", callback_data=f"lang:{job_id}:no")],
                 [
                     InlineKeyboardButton(
-                        "Nordsamisk", callback_data=f"lang:{job_id}:sme"
+                        "🇳🇴 Norsk tale → norsk tekst",
+                        callback_data=f"lang:{job_id}:no",
                     )
                 ],
                 [
                     InlineKeyboardButton(
-                        "Automatisk – eksperimentell",
-                        callback_data=f"lang:{job_id}:auto",
+                        "Nordsamisk tale → nordsamisk tekst",
+                        callback_data=f"lang:{job_id}:sme",
                     )
                 ],
             ]
         )
+
+    @classmethod
+    def _language_prompt(cls, filename: str) -> str:
+        return (
+            f"✅ Fil mottatt: {filename}\n\n"
+            "Velg språket som faktisk snakkes i opptaket:\n"
+            "• Norsk tale gir norsk tekst\n"
+            "• Nordsamisk tale gir nordsamisk tekst\n\n"
+            "Valget oversetter ikke opptaket."
+        )
+
+    @staticmethod
+    def _language_route(language: str) -> str:
+        return {
+            "no": "Norsk tale → norsk transkripsjon",
+            "sme": "Nordsamisk tale → nordsamisk transkripsjon",
+            "auto": "Automatisk språkvalg (eldre, eksperimentell jobb)",
+        }.get(language, language)
 
     @staticmethod
     def _output_keyboard(job_id: str) -> InlineKeyboardMarkup:

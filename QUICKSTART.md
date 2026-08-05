@@ -13,6 +13,11 @@ Kjør deretter hele veiviseren:
 
 Veiviseren bygger den offisielle lokale Bot API-serveren, setter opp Python, lagrer hemmelighetene i `.env`, utfører kontroller og tilbyr engangsovergang samt automatisk oppstart.
 
+I Telegram velger du språket som faktisk snakkes i lydfilen:
+`Norsk tale → norsk tekst` eller
+`Nordsamisk tale → nordsamisk tekst`. Ailo leverer hele den rene
+Whisper-transkripsjonen uten oversettelse, språkvask, sammendrag eller Gemini.
+
 Etter aktivering:
 
 ```bash

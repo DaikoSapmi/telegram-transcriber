@@ -26,3 +26,30 @@ def test_local_bot_api_urls_are_applied(tmp_path: Path):
     )
     assert application.bot.local_mode is True
     assert application.update_processor.max_concurrent_updates == 4
+
+
+def test_language_choice_is_explicit_and_has_no_automatic_frontend_option():
+    keyboard = TranscriptionBot._language_keyboard("job-1")
+    buttons = [row[0] for row in keyboard.inline_keyboard]
+
+    assert TranscriptionBot.FRONTEND_LANGUAGES == {"no", "sme"}
+    assert [button.callback_data for button in buttons] == [
+        "lang:job-1:no",
+        "lang:job-1:sme",
+    ]
+    labels = " ".join(button.text for button in buttons)
+    assert "Norsk tale → norsk tekst" in labels
+    assert "Nordsamisk tale → nordsamisk tekst" in labels
+    assert "Automatisk" not in labels
+
+
+def test_ailo_explains_same_language_and_no_postprocessing():
+    prompt = TranscriptionBot._language_prompt("møte.m4a")
+
+    assert "språket som faktisk snakkes" in prompt
+    assert "Norsk tale gir norsk tekst" in prompt
+    assert "Nordsamisk tale gir nordsamisk tekst" in prompt
+    assert "oversetter ikke" in prompt
+    assert "Ingen oversettelse" in TranscriptionBot.PURE_TRANSCRIPTION_NOTE
+    assert "språkvask" in TranscriptionBot.PURE_TRANSCRIPTION_NOTE
+    assert "sammendrag" in TranscriptionBot.PURE_TRANSCRIPTION_NOTE
