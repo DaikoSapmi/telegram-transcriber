@@ -159,6 +159,24 @@ tail -f logs/telegram-bot-api.stderr.log
 
 Den roterende serverloggen ligger som standard i `~/Library/Logs/telegram-bot-api/telegram-bot-api.log`.
 
+### Etter oppdatering eller hvis gammel Ailo svarer
+
+Oppdater `main` og installer LaunchAgent på nytt:
+
+```bash
+git fetch origin
+git switch main
+git pull --ff-only origin main
+./scripts/install_launchd.sh
+python3 scripts/diagnose_local_setup.py
+```
+
+Installasjonsskriptet stopper eldre Ailo-prosesser fra samme prosjektmappe før
+den nye prosessen startes. Det avbryter med PID og mappe hvis en konkurrerende
+Telegram-transcriber fra en annen mappe fremdeles kjører. Send deretter
+`/version` til Ailo. For denne utgaven skal svaret inneholde
+`pure-transcription-2026.08.06` og `ingen Gemini`.
+
 ## Telegram-forløp
 
 1. Send en lydfil.
@@ -170,6 +188,9 @@ Den roterende serverloggen ligger som standard i `~/Library/Logs/telegram-bot-ap
    språkvask eller sammendrag, og kildelyden slettes lokalt.
 
 `/cancel <jobb-id>` kan brukes for en bestemt jobb. Uten ID avbrytes brukerens nyeste aktive jobb. Med nyere Transformers-versjoner kontrolleres avbrudd også mellom Whispers interne segmenter; ellers stoppes jobben mellom hoveddeler.
+
+`/version` viser den aktive Ailo-utgaven og bekrefter at prosessen kjører uten
+Gemini eller annen etterbehandling.
 
 ## Langformprofil
 

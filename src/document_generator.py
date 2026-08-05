@@ -11,6 +11,7 @@ from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.shared import Inches, Pt, RGBColor
 
 from config.settings import Settings
+from src.release import AILO_RELEASE
 from src.transcription_types import TranscriptionResult
 
 
@@ -66,6 +67,7 @@ class DocumentGenerator:
             ("Opprinnelig fil", Path(original_filename).name),
             ("Talespråk", Settings.get_language_name(result.language)),
             ("Modell", result.model_name),
+            ("Ailo-versjon", AILO_RELEASE),
             ("Varighet", self._format_timestamp(result.duration_seconds)),
             (
                 "Behandling",

@@ -6,9 +6,11 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import plistlib
 import shutil
 import socket
 import subprocess
+import sys
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -36,6 +38,14 @@ def main() -> None:
     args = parser.parse_args()
     values = read_env(args.env_file)
     checks: list[bool] = []
+
+    release_file = project_dir / "AILO_RELEASE"
+    release = (
+        release_file.read_text(encoding="utf-8").strip()
+        if release_file.is_file()
+        else ""
+    )
+    checks.append(_result(bool(release), f"Ailo-kildeversjon: {release or 'mangler'}"))
 
     required = ("TELEGRAM_BOT_TOKEN", "TELEGRAM_API_ID", "TELEGRAM_API_HASH")
     missing = [key for key in required if not values.get(key)]
@@ -140,6 +150,39 @@ def main() -> None:
                 )
             except (OSError, urllib.error.URLError, json.JSONDecodeError):
                 checks.append(_result(False, "Lokal getMe feilet"))
+
+        if sys.platform == "darwin":
+            label = "com.daikosapmi.telegram-transcriber"
+            plist_path = Path.home() / "Library" / "LaunchAgents" / f"{label}.plist"
+            try:
+                with plist_path.open("rb") as plist_file:
+                    plist = plistlib.load(plist_file)
+                arguments = plist.get("ProgramArguments", [])
+                expected_start = str(project_dir / "start.sh")
+                actual_start = arguments[1] if len(arguments) > 1 else ""
+                checks.append(
+                    _result(
+                        actual_start == expected_start,
+                        f"LaunchAgent bruker denne prosjektmappen: {actual_start}",
+                    )
+                )
+            except (OSError, plistlib.InvalidFileException):
+                checks.append(
+                    _result(False, f"Kunne ikke lese LaunchAgent: {plist_path}")
+                )
+
+            launchctl = subprocess.run(
+                ["launchctl", "print", f"gui/{os.getuid()}/{label}"],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            checks.append(
+                _result(
+                    launchctl.returncode == 0 and "state = running" in launchctl.stdout,
+                    "Ny Ailo LaunchAgent kjører",
+                )
+            )
 
     if not all(checks):
         raise SystemExit(1)
