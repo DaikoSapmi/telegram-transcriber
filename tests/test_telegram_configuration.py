@@ -1,7 +1,9 @@
 from pathlib import Path
 
+from telegram.ext import CommandHandler
+
 from config.settings import Settings
-from src.telegram_bot import TranscriptionBot
+from src.telegram_bot import AILO_RELEASE, TranscriptionBot
 
 
 def test_local_bot_api_urls_are_applied(tmp_path: Path):
@@ -26,6 +28,15 @@ def test_local_bot_api_urls_are_applied(tmp_path: Path):
     )
     assert application.bot.local_mode is True
     assert application.update_processor.max_concurrent_updates == 4
+    commands = {
+        command
+        for handlers in application.handlers.values()
+        for handler in handlers
+        if isinstance(handler, CommandHandler)
+        for command in handler.commands
+    }
+    assert "version" in commands
+    assert AILO_RELEASE == "pure-transcription-2026.08.06"
 
 
 def test_language_choice_is_explicit_and_has_no_automatic_frontend_option():

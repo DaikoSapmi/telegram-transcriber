@@ -25,4 +25,9 @@ python3 scripts/diagnose_local_setup.py
 ./scripts/create_large_test_audio.sh
 ```
 
+Etter en kodeoppdatering kjører du `./scripts/install_launchd.sh` på nytt. Det
+stopper en gammel Ailo-prosess fra denne prosjektmappen før den nye startes.
+Send `/version` til Ailo og kontroller at svaret viser
+`pure-transcription-2026.08.06` og `ingen Gemini`.
+
 Se [README.md](README.md) for manuelle enkeltsteg og feilsøking.

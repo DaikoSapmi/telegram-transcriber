@@ -26,6 +26,7 @@ from telegram.ext import (
 from config.settings import Settings, settings
 from src.job_processor import JobProcessor
 from src.job_queue import JobQueue, TranscriptionJob
+from src.release import AILO_RELEASE
 from src.transcriber import TranscriptionCancelled
 
 logger = logging.getLogger(__name__)
@@ -68,7 +69,9 @@ class TranscriptionBot:
         self.config.validate()
         application = self.build_application()
         logger.info(
-            "Starter Telegram-bot med lokal_mode=%s", self.config.telegram_local_mode
+            "Starter Ailo release=%s med lokal_mode=%s",
+            AILO_RELEASE,
+            self.config.telegram_local_mode,
         )
         application.run_polling(allowed_updates=Update.ALL_TYPES)
 
@@ -91,6 +94,7 @@ class TranscriptionBot:
 
         application.add_handler(CommandHandler("start", self._cmd_start))
         application.add_handler(CommandHandler("help", self._cmd_help))
+        application.add_handler(CommandHandler("version", self._cmd_version))
         application.add_handler(CommandHandler("status", self._cmd_status))
         application.add_handler(CommandHandler("cancel", self._cmd_cancel))
         application.add_handler(
@@ -144,6 +148,7 @@ class TranscriptionBot:
             "Talegjenkjenningen kjøres lokalt på Mac-en.\n\n"
             "/status – vis aktive jobber\n"
             "/cancel – avbryt siste aktive jobb\n"
+            "/version – bekreft hvilken Ailo-versjon som kjører\n"
             "/help – vis hjelp"
         )
 
@@ -168,6 +173,17 @@ class TranscriptionBot:
             "Jobbene kjøres én om gangen og overlever omstart. Bruk /status for fremdrift og "
             "/cancel for å avbryte.\n\n"
             f"{local_note}"
+        )
+
+    async def _cmd_version(
+        self, update: Update, _context: ContextTypes.DEFAULT_TYPE
+    ) -> None:
+        if not await self._authorize_message(update):
+            return
+        await update.effective_message.reply_text(
+            f"Ailo-versjon: {AILO_RELEASE}\n"
+            "Modus: ren lokal Whisper-transkripsjon\n"
+            "Etterbehandling: ingen Gemini, oversettelse, språkvask eller sammendrag"
         )
 
     async def _cmd_status(
