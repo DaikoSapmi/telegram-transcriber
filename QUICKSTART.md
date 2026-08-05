@@ -1,25 +1,23 @@
-# 🚀 Hurtigstart
+# Hurtigstart på Mac
 
-## Første gang:
+Skaff først:
+
+- App `api_id` og `api_hash` fra [my.telegram.org](https://my.telegram.org/apps)
+- bot-token fra `@BotFather`
+
+Kjør deretter hele veiviseren:
+
 ```bash
-cd telegram-transcriber
-./setup.sh
-cp .env.example .env
-# Rediger .env med TELEGRAM_BOT_TOKEN og ALLOWED_USERS
-./start.sh
+./scripts/install_macos.sh
 ```
 
-## Hver gang etterpå:
+Veiviseren bygger den offisielle lokale Bot API-serveren, setter opp Python, lagrer hemmelighetene i `.env`, utfører kontroller og tilbyr engangsovergang samt automatisk oppstart.
+
+Etter aktivering:
+
 ```bash
-cd telegram-transcriber
-./start.sh
+python3 scripts/diagnose_local_setup.py
+./scripts/create_large_test_audio.sh
 ```
 
-## Stoppe:
-Trykk `Ctrl+C`
-
-## Få Telegram ID:
-Gå til @userinfobot på Telegram
-
-## Få Bot Token:
-Gå til @BotFather på Telegram → /newbot
+Se [README.md](README.md) for manuelle enkeltsteg og feilsøking.

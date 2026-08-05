@@ -40,6 +40,8 @@ env/
 # Temporary and output files
 temp/
 output/
+data/
+logs/
 *.tmp
 *.log
 

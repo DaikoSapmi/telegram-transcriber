@@ -1,443 +1,599 @@
-# src/telegram_bot.py
-"""Telegram bot for mottak av lydfiler og sending av transkripsjoner."""
-import os
-import tempfile
-import logging
-from pathlib import Path
-from typing import Optional
+"""Telegram front end for the durable local transcription worker."""
 
-from telegram import Update, Document
+from __future__ import annotations
+
+import asyncio
+import logging
+import logging.handlers
+import shutil
+import time
+import uuid
+from contextlib import suppress
+from pathlib import Path
+from typing import ClassVar
+
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram.error import TelegramError
 from telegram.ext import (
     Application,
+    CallbackQueryHandler,
     CommandHandler,
-    MessageHandler,
     ContextTypes,
-    filters
+    MessageHandler,
+    filters,
 )
 
-from config.settings import settings
-from src.transcriber import Transcriber
-from src.document_generator import DocumentGenerator
-from src.summarizer import Summarizer
+from config.settings import Settings, settings
+from src.job_processor import JobProcessor
+from src.job_queue import JobQueue, TranscriptionJob
+from src.transcriber import TranscriptionCancelled
 
-# Sett opp logging
-logging.basicConfig(
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    level=logging.INFO
-)
 logger = logging.getLogger(__name__)
 
 
 class TranscriptionBot:
-    """Telegram bot for transkribering."""
-    
-    def __init__(self):
-        self.transcriber: Optional[Transcriber] = None
-        self.doc_generator = DocumentGenerator()
-        self.summarizer = Summarizer()
-        self.temp_dir = Path("temp")
-        self.temp_dir.mkdir(exist_ok=True)
-        
-        # Initialiser transkriber
-        try:
-            self.transcriber = Transcriber(
-                model_name=settings.asr_model,
-                device=settings.asr_device
-            )
-        except Exception as e:
-            logger.error(f"Kunne ikke initialisere transkriber: {e}")
-            raise
-    
+    """Responsive Telegram bot backed by one persistent local worker."""
+
+    AUDIO_EXTENSIONS: ClassVar[frozenset[str]] = frozenset(
+        {
+            ".aac",
+            ".flac",
+            ".m4a",
+            ".mp3",
+            ".mp4",
+            ".oga",
+            ".ogg",
+            ".opus",
+            ".wav",
+        }
+    )
+
+    def __init__(self, config: Settings = settings):
+        self.config = config
+        self.config.ensure_directories()
+        self.queue = JobQueue(config.queue_db)
+        self.processor = JobProcessor(self.queue, config)
+        self.worker_task: asyncio.Task | None = None
+        self.worker_wakeup: asyncio.Event | None = None
+        self.stopping = False
+        self.last_maintenance = 0.0
+
     def run(self) -> None:
-        """Starter bot-en."""
-        settings.validate()
-        
-        application = Application.builder().token(settings.telegram_bot_token).build()
-        
-        # Registrer handlers
+        self.config.validate()
+        application = self.build_application()
+        logger.info(
+            "Starter Telegram-bot med lokal_mode=%s", self.config.telegram_local_mode
+        )
+        application.run_polling(allowed_updates=Update.ALL_TYPES)
+
+    def build_application(self) -> Application:
+        """Build the application separately so configuration can be tested offline."""
+        builder = (
+            Application.builder()
+            .token(self.config.telegram_bot_token)
+            .concurrent_updates(self.config.telegram_concurrent_updates)
+            .post_init(self._post_init)
+            .post_shutdown(self._post_shutdown)
+        )
+        if self.config.telegram_local_mode:
+            builder = (
+                builder.base_url(self.config.telegram_base_url)
+                .base_file_url(self.config.telegram_base_file_url)
+                .local_mode(True)
+            )
+        application = builder.build()
+
         application.add_handler(CommandHandler("start", self._cmd_start))
         application.add_handler(CommandHandler("help", self._cmd_help))
-        application.add_handler(MessageHandler(filters.VOICE | filters.AUDIO, self._handle_audio))
-        application.add_handler(MessageHandler(filters.Document.ALL, self._handle_document))
-        application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self._handle_text))
-        
-        logger.info("Bot starter...")
-        application.run_polling(allowed_updates=Update.ALL_TYPES)
-    
-    def _is_private_chat(self, update: Update) -> bool:
-        """Sjekker om melding kommer fra privat chat (ikke gruppe)."""
-        chat = update.effective_chat
-        if chat and chat.type != 'private':
-            logger.warning(f"Forsøk på bruk i gruppe: {chat.type}, ID={chat.id}")
+        application.add_handler(CommandHandler("status", self._cmd_status))
+        application.add_handler(CommandHandler("cancel", self._cmd_cancel))
+        application.add_handler(
+            CallbackQueryHandler(self._handle_callback, pattern=r"^(lang|out):")
+        )
+        application.add_handler(
+            MessageHandler(filters.VOICE | filters.AUDIO, self._handle_audio)
+        )
+        application.add_handler(
+            MessageHandler(filters.Document.ALL, self._handle_document)
+        )
+        application.add_handler(
+            MessageHandler(filters.TEXT & ~filters.COMMAND, self._handle_text)
+        )
+        application.add_error_handler(self._handle_error)
+        return application
+
+    async def _post_init(self, application: Application) -> None:
+        recovered = self.queue.recover_interrupted()
+        if recovered:
+            logger.warning("La %d avbrutte jobber tilbake i køen", recovered)
+        for job in self.queue.all_jobs():
+            if job.status == "cancelled":
+                self.processor.cleanup_cancelled(job)
+        self.processor.purge_expired()
+        self.worker_wakeup = asyncio.Event()
+        self.worker_task = asyncio.create_task(
+            self._worker_loop(application), name="transcription-worker"
+        )
+
+    async def _post_shutdown(self, _application: Application) -> None:
+        self.stopping = True
+        if self.worker_wakeup:
+            self.worker_wakeup.set()
+        if self.worker_task:
+            self.worker_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await self.worker_task
+        self.processor.transcriber.unload_model()
+
+    async def _cmd_start(
+        self, update: Update, _context: ContextTypes.DEFAULT_TYPE
+    ) -> None:
+        if not await self._authorize_message(update):
+            return
+        await update.effective_message.reply_text(
+            "🎙️ Lokal transkriberingsbot\n\n"
+            "Send en lydfil. Du velger deretter talespråk og om resultatet skal være TXT, Word eller begge. "
+            "Transkripsjonen kjøres lokalt på Mac-en.\n\n"
+            "/status – vis aktive jobber\n"
+            "/cancel – avbryt siste aktive jobb\n"
+            "/help – vis hjelp"
+        )
+
+    async def _cmd_help(
+        self, update: Update, _context: ContextTypes.DEFAULT_TYPE
+    ) -> None:
+        if not await self._authorize_message(update):
+            return
+        local_note = (
+            "Lokal Bot API-server er aktivert for filer opptil 2000 MB."
+            if self.config.telegram_local_mode
+            else "Offisiell Bot API er i bruk; botnedlasting er begrenset av Telegram."
+        )
+        await update.effective_message.reply_text(
+            "Send m4a, mp3, wav, ogg, opus, flac, aac eller mp4.\n\n"
+            "Språk:\n"
+            "• Norsk – NbAiLab/nb-whisper-large\n"
+            "• Nordsamisk – NbAiLab/whisper-large-sme\n"
+            "• Automatisk – eksperimentell\n\n"
+            "Jobbene kjøres én om gangen og overlever omstart. Bruk /status for fremdrift og "
+            "/cancel for å avbryte.\n\n"
+            f"{local_note}"
+        )
+
+    async def _cmd_status(
+        self, update: Update, _context: ContextTypes.DEFAULT_TYPE
+    ) -> None:
+        if not await self._authorize_message(update):
+            return
+        user = update.effective_user
+        jobs = self.queue.active_for_user(user.id)
+        if not jobs:
+            latest = self.queue.latest_for_user(user.id)
+            if not latest:
+                await update.effective_message.reply_text("Ingen jobber er registrert.")
+                return
+            detail = (
+                f"\nFeil: {latest.error[:500]}"
+                if latest.status == "failed" and latest.error
+                else ""
+            )
+            await update.effective_message.reply_text(
+                "Ingen aktive jobber.\n\n"
+                f"Siste jobb: {latest.original_filename}\n"
+                f"ID: {latest.id} · status: {latest.status}{detail}"
+            )
+            return
+        lines = ["Aktive jobber:"]
+        for job in jobs:
+            position = self.queue.position(job.id)
+            queue_text = f" · køplass {position}" if position else ""
+            lines.append(
+                f"\n{self._status_icon(job.status)} {job.original_filename}\n"
+                f"ID: {job.id} · {job.progress}% · {job.progress_text}{queue_text}"
+            )
+        await update.effective_message.reply_text("".join(lines))
+
+    async def _cmd_cancel(
+        self, update: Update, context: ContextTypes.DEFAULT_TYPE
+    ) -> None:
+        if not await self._authorize_message(update):
+            return
+        user = update.effective_user
+        job = (
+            self.queue.get(context.args[0])
+            if context.args
+            else self.queue.latest_active_for_user(user.id)
+        )
+        if not job or job.user_id != user.id:
+            await update.effective_message.reply_text(
+                "Fant ingen aktiv jobb å avbryte."
+            )
+            return
+        cancelled = self.queue.request_cancel(job.id, user.id)
+        if not cancelled:
+            await update.effective_message.reply_text("Jobben er allerede avsluttet.")
+            return
+        if cancelled.status == "cancelled":
+            await asyncio.to_thread(self.processor.cleanup_cancelled, cancelled)
+            await update.effective_message.reply_text(f"⏹️ Jobb {job.id} er avbrutt.")
+        else:
+            await update.effective_message.reply_text(
+                f"⏹️ Avbryter jobb {job.id} ved neste sikre kontrollpunkt."
+            )
+
+    async def _handle_audio(
+        self, update: Update, context: ContextTypes.DEFAULT_TYPE
+    ) -> None:
+        if not await self._authorize_message(update):
+            return
+        media = update.effective_message.voice or update.effective_message.audio
+        original_name = getattr(media, "file_name", None)
+        if not original_name:
+            extension = (
+                ".ogg"
+                if update.effective_message.voice
+                else self._extension_for_mime(media.mime_type)
+            )
+            original_name = (
+                f"lydopptak_{update.effective_message.date:%Y-%m-%d_%H-%M}{extension}"
+            )
+        await self._receive_file(update, context, media, original_name)
+
+    async def _handle_document(
+        self, update: Update, context: ContextTypes.DEFAULT_TYPE
+    ) -> None:
+        if not await self._authorize_message(update):
+            return
+        document = update.effective_message.document
+        filename = Path(document.file_name or "lydopptak").name
+        if Path(filename).suffix.lower() not in self.AUDIO_EXTENSIONS:
+            await update.effective_message.reply_text(
+                "Dette ser ikke ut som en støttet lydfil. Jeg støtter m4a, mp3, wav, ogg, opus, flac, aac og mp4."
+            )
+            return
+        await self._receive_file(update, context, document, filename)
+
+    async def _handle_text(
+        self, update: Update, _context: ContextTypes.DEFAULT_TYPE
+    ) -> None:
+        if not await self._authorize_message(update):
+            return
+        await update.effective_message.reply_text("Send en lydfil, eller bruk /help.")
+
+    async def _receive_file(
+        self, update: Update, context: ContextTypes.DEFAULT_TYPE, media, filename: str
+    ) -> None:
+        size = int(getattr(media, "file_size", 0) or 0)
+        maximum = self.config.max_file_size_mb * 1024 * 1024
+        if size > maximum:
+            await update.effective_message.reply_text(
+                f"Filen er større enn grensen på {self.config.max_file_size_mb} MB."
+            )
+            return
+
+        notice = await update.effective_message.reply_text(
+            f"✅ Fil mottatt: {filename}\n📥 Laster ned …"
+        )
+        extension = Path(filename).suffix.lower() or self._extension_for_mime(
+            getattr(media, "mime_type", "")
+        )
+        destination = Path(self.config.temp_dir) / f"{uuid.uuid4().hex}{extension}"
+        try:
+            telegram_file = await context.bot.get_file(media.file_id)
+            local_source = Path(telegram_file.file_path or "")
+            if self.config.telegram_local_mode and local_source.is_file():
+                await asyncio.to_thread(shutil.copyfile, local_source, destination)
+            else:
+                await telegram_file.download_to_drive(custom_path=destination)
+            actual_size = destination.stat().st_size
+            if actual_size > maximum:
+                destination.unlink(missing_ok=True)
+                await notice.edit_text(
+                    f"Filen er større enn grensen på {self.config.max_file_size_mb} MB."
+                )
+                return
+            job = self.queue.create(
+                chat_id=update.effective_chat.id,
+                user_id=update.effective_user.id,
+                message_id=update.effective_message.message_id,
+                telegram_file_id=media.file_id,
+                original_filename=Path(filename).name,
+                source_path=str(destination),
+            )
+            await notice.edit_text(
+                f"✅ Fil mottatt: {filename}\n\nVelg talespråk:",
+                reply_markup=self._language_keyboard(job.id),
+            )
+        except Exception:
+            destination.unlink(missing_ok=True)
+            logger.exception("Kunne ikke motta Telegram-fil")
+            await notice.edit_text(
+                "❌ Kunne ikke laste ned filen. Kontroller lokal Bot API-server og loggen."
+            )
+
+    async def _handle_callback(
+        self, update: Update, _context: ContextTypes.DEFAULT_TYPE
+    ) -> None:
+        query = update.callback_query
+        await query.answer()
+        if not self._is_private(update) or not self._is_authorized(update):
+            await query.edit_message_text("⛔ Ingen tilgang.")
+            return
+        try:
+            action, job_id, value = (query.data or "").split(":", 2)
+        except ValueError:
+            await query.edit_message_text("Ugyldig valg.")
+            return
+
+        if action == "lang":
+            job = self.queue.set_language(job_id, update.effective_user.id, value)
+            if not job:
+                await query.edit_message_text(
+                    "Valget er utløpt eller jobben er allerede endret."
+                )
+                return
+            await query.edit_message_text(
+                f"✅ Fil mottatt: {job.original_filename}\n"
+                f"🗣️ Talespråk: {self.config.get_language_name(value)}\n\n"
+                "Velg resultat:",
+                reply_markup=self._output_keyboard(job.id),
+            )
+            return
+
+        job = self.queue.enqueue(job_id, update.effective_user.id, value)
+        if not job:
+            await query.edit_message_text(
+                "Valget er utløpt eller jobben er allerede lagt i kø."
+            )
+            return
+        position = self.queue.position(job.id) or 1
+        await query.edit_message_text(
+            f"✅ Fil mottatt: {job.original_filename}\n"
+            f"🗣️ Talespråk: {self.config.get_language_name(job.language or 'no')}\n"
+            f"📄 Resultat: {self._output_name(value)}\n"
+            f"📦 Plass i køen: {position}\n\n"
+            f"Jobb-ID: {job.id}"
+        )
+        if self.worker_wakeup:
+            self.worker_wakeup.set()
+
+    async def _worker_loop(self, application: Application) -> None:
+        while not self.stopping:
+            job = self.queue.claim_next()
+            if job:
+                try:
+                    await self._execute_job(application, job)
+                except Exception:
+                    logger.exception("Køarbeideren feilet utenfor jobbens feilvern")
+                    await asyncio.sleep(self.config.worker_poll_seconds)
+                continue
+            if time.monotonic() - self.last_maintenance >= 3600:
+                await asyncio.to_thread(self.processor.purge_expired)
+                self.last_maintenance = time.monotonic()
+            if not self.worker_wakeup:
+                await asyncio.sleep(self.config.worker_poll_seconds)
+                continue
+            self.worker_wakeup.clear()
+            try:
+                await asyncio.wait_for(
+                    self.worker_wakeup.wait(), timeout=self.config.worker_poll_seconds
+                )
+            except asyncio.TimeoutError:
+                pass
+
+    async def _execute_job(
+        self, application: Application, job: TranscriptionJob
+    ) -> None:
+        progress_message = None
+        event_loop = asyncio.get_running_loop()
+        last_update = {"time": 0.0, "text": ""}
+
+        def report(percent: int, text: str) -> None:
+            self.queue.update_progress(job.id, percent, text)
+            now = time.monotonic()
+            if progress_message and (
+                text != last_update["text"] or now - last_update["time"] >= 20
+            ):
+                last_update.update(time=now, text=text)
+                event_loop.call_soon_threadsafe(
+                    asyncio.create_task,
+                    self._edit_progress(
+                        application,
+                        job.id,
+                        progress_message.message_id,
+                        job.chat_id,
+                        percent,
+                        text,
+                    ),
+                )
+
+        try:
+            progress_message = await application.bot.send_message(
+                job.chat_id,
+                f"🔊 Starter transkribering av {job.original_filename} …",
+            )
+            result_paths = await asyncio.to_thread(self.processor.process, job, report)
+            if self.queue.is_cancel_requested(job.id):
+                raise TranscriptionCancelled("Jobben ble avbrutt før levering")
+            await progress_message.edit_text("📤 Sender resultat …")
+            for index, path in enumerate(result_paths):
+                caption = (
+                    f"✅ Ferdig: {job.original_filename}\n"
+                    f"Talespråk: {self.config.get_language_name(job.language or 'no')}"
+                    if index == 0
+                    else None
+                )
+                await application.bot.send_document(
+                    chat_id=job.chat_id,
+                    document=path,
+                    filename=path.name,
+                    caption=caption,
+                )
+            self.queue.mark_completed(job.id, (str(path) for path in result_paths))
+            try:
+                await asyncio.to_thread(
+                    self.processor.cleanup_success, job, result_paths
+                )
+            except Exception:
+                logger.exception("Opprydding etter fullført jobb %s feilet", job.id)
+            with suppress(TelegramError):
+                await progress_message.edit_text("✅ Ferdig")
+        except TranscriptionCancelled:
+            logger.info("Jobb %s ble avbrutt", job.id)
+            self.queue.mark_cancelled(job.id)
+            await asyncio.to_thread(self.processor.cleanup_cancelled, job)
+            with suppress(TelegramError, AttributeError):
+                await progress_message.edit_text("⏹️ Jobben ble avbrutt.")
+        except Exception as error:
+            logger.exception("Jobb %s feilet", job.id)
+            self.queue.mark_failed(job.id, str(error))
+            error_text = (
+                f"❌ Transkriberingen feilet. Jobb-ID: {job.id}\n"
+                "Filer beholdes midlertidig for feilsøking. Se loggen eller bruk /status."
+            )
+            with suppress(TelegramError):
+                if progress_message:
+                    await progress_message.edit_text(error_text)
+                else:
+                    await application.bot.send_message(job.chat_id, error_text)
+
+    async def _edit_progress(
+        self,
+        application: Application,
+        job_id: str,
+        message_id: int,
+        chat_id: int,
+        percent: int,
+        text: str,
+    ) -> None:
+        job = self.queue.get(job_id)
+        if not job or job.status != "processing":
+            return
+        with suppress(TelegramError):
+            await application.bot.edit_message_text(
+                chat_id=chat_id,
+                message_id=message_id,
+                text=f"📝 {text} … {percent}%\nJobb-ID: {job_id}",
+            )
+
+    async def _authorize_message(self, update: Update) -> bool:
+        if not self._is_private(update):
+            if update.effective_message:
+                await update.effective_message.reply_text(
+                    "Jeg fungerer bare i private samtaler."
+                )
+            return False
+        if not self._is_authorized(update):
+            if update.effective_message:
+                await update.effective_message.reply_text(
+                    "⛔ Du har ikke tilgang til denne boten."
+                )
             return False
         return True
-    
+
+    @staticmethod
+    def _is_private(update: Update) -> bool:
+        return bool(update.effective_chat and update.effective_chat.type == "private")
+
     def _is_authorized(self, update: Update) -> bool:
-        """Sjekker om bruker er autorisert."""
         user = update.effective_user
         if not user:
             return False
-        
-        user_id = str(user.id)
-        username = user.username or ""
-        
-        if not settings.is_user_allowed(user_id, username):
-            logger.warning(f"Uautorisert tilgang forsøkt: ID={user_id}, username={username}")
-            return False
-        
-        return True
-    
-    async def _cmd_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        """Håndterer /start kommando."""
-        # Sjekk at det er privat chat
-        if not self._is_private_chat(update):
-            await update.message.reply_text(
-                "⛔ Jeg fungerer kun i private chatter, ikke i grupper.\n"
-                "Start en privat samtale med meg istedenfor."
+        allowed = self.config.is_user_allowed(str(user.id), user.username or "")
+        if not allowed:
+            logger.warning(
+                "Uautorisert tilgang: id=%s username=%s", user.id, user.username
             )
-            return
-        
-        if not self._is_authorized(update):
-            await update.message.reply_text(
-                "⛔ Beklager, du har ikke tilgang til denne bot-en.\n"
-                "Kontakt administrator hvis du mener dette er en feil."
-            )
-            return
-        
-        await update.message.reply_text(
-            "🎙️ Velkommen til Transkriberingsbot!\n\n"
-            "Send meg en lydfil (m4a, mp3, wav, ogg) så transkriberer jeg den til et Word-dokument.\n\n"
-            "Kommandoer:\n"
-            "/help - Vis hjelp\n\n"
-            "Tips: Skriv 'samisk' hvis filen er på nordsamisk."
-        )
-    
-    async def _cmd_help(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        """Håndterer /help kommando."""
-        summary_status = "✅ Tilgjengelig" if self.summarizer.is_available() else "❌ Konfigurer LLM i .env"
-        
-        await update.message.reply_text(
-            "📖 Hjelp\n\n"
-            "1️⃣ Send meg en lydfil (m4a, mp3, wav, ogg)\n"
-            "2️⃣ Jeg spør om format og språk\n"
-            "3️⃣ Motta Word-dokument\n\n"
-            "*Format:*\n"
-            "1️⃣ Full transkripsjon\n"
-            f"2️⃣ Møtereferat ({summary_status})\n\n"
-            "*Dokument-språk:*\n"
-            "🇳🇴 n = Norsk\n"
-            "🇬🇧 e = Engelsk\n\n"
-            "*Ekstra:*\n"
-            "⏱️ 'tidsstempel' = med tidskoder\n\n"
-            "*Eksempel:* 1 n (transkripsjon på norsk)\n"
-            "*Eksempel:* 2 e tidsstempel (referat på engelsk)\n\n"
-            "*LLM for møtereferat:*\n"
-            "Støtter: OpenAI, Anthropic, Gemini, Kimi, Ollama\n"
-            "Anbefalt: Ollama (gratis, lokal, privat)\n\n"
-            "Tips: Skriv 'samisk' før fil for nordsamisk lyd"
-        )
-    
-    async def _handle_audio(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        """Håndterer voice messages og audio."""
-        if not self._is_private_chat(update):
-            return
-        
-        if not self._is_authorized(update):
-            await update.message.reply_text("⛔ Ingen tilgang.")
-            return
-        
-        try:
-            # Last ned fil
-            file_obj = update.message.voice or update.message.audio
-            file_name = f"audio_{file_obj.file_id}.ogg"
-            
-            await update.message.reply_text("⏳ Laster ned fil...")
-            file_path = await self._download_file(file_obj, context, suffix=".ogg")
-            
-            # Lagre filinfo og spør om format
-            context.user_data['pending_file'] = file_path
-            context.user_data['file_name'] = file_name
-            
-            await self._ask_format_and_language(update, context)
-            
-        except Exception as e:
-            logger.error(f"Feil ved håndtering av audio: {e}")
-            await update.message.reply_text(f"❌ Feil: {str(e)}")
-    
-    async def _handle_document(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        """Håndterer dokument (inkludert lydfiler sendt som doc)."""
-        if not self._is_private_chat(update):
-            return  # Ignorer gruppe-meldinger helt
-        
-        if not self._is_authorized(update):
-            await update.message.reply_text("⛔ Ingen tilgang.")
-            return
-        
-        document = update.message.document
-        
-        # Sjekk at det er en lydfil
-        if not self._is_audio_file(document.file_name):
-            await update.message.reply_text(
-                "⚠️ Dette ser ikke ut som en lydfil.\n"
-                "Jeg støtter: m4a, mp3, wav, ogg"
-            )
-            return
-        
-        try:
-            # Last ned
-            await update.message.reply_text("⏳ Laster ned fil...")
-            file_path = await self._download_file(document, context)
-            
-            # Lagre filinfo og spør om format
-            context.user_data['pending_file'] = file_path
-            context.user_data['file_name'] = document.file_name
-            
-            await self._ask_format_and_language(update, context)
-            
-        except Exception as e:
-            logger.error(f"Feil ved håndtering av dokument: {e}")
-            await update.message.reply_text(f"❌ Feil: {str(e)}")
-    
-    async def _ask_format_and_language(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        """Spør bruker om ønsket format og språk."""
-        summary_available = self.summarizer.is_available()
-        
-        message = "📋 Hva ønsker du?\n\n"
-        message += "*Format:*\n"
-        message += "1️⃣ Full transkripsjon (alt som ble sagt)\n"
-        
-        if summary_available:
-            message += "2️⃣ Møtereferat (oppsummering med aksjonspunkter)\n\n"
-        else:
-            message += "(Møtereferat krever OPENAI_API_KEY i .env)\n\n"
-        
-        message += "*Dokument-språk:*\n"
-        message += "🇳🇴 Norsk (svar 'n')\n"
-        message += "🇬🇧 Engelsk (svar 'e')\n\n"
-        
-        message += "*Ekstra:*\n"
-        message += "⏱️ Skriv 'tidsstempel' for tidskoder\n\n"
-        
-        message += "📌 *Eksempel:* 1 n (full transkripsjon på norsk)\n"
-        message += "📌 *Eksempel:* 2 e tidsstempel (referat på engelsk med tidskoder)"
-        
-        await update.message.reply_text(message, parse_mode='Markdown')
-    
-    async def _handle_text(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        """Håndterer tekstmeldinger (format/språk valg etc)."""
-        if not self._is_private_chat(update):
-            return
-        
-        if not self._is_authorized(update):
-            await update.message.reply_text("⛔ Ingen tilgang.")
-            return
-        
-        text = update.message.text.lower().strip()
-        
-        # Sjekk om vi venter på format-svar
-        if 'pending_file' in context.user_data:
-            await self._handle_format_selection(update, context, text)
-            return
-        
-        # Gamle kommandoer (bakoverkompatibilitet)
-        if "samisk" in text or "nordsamisk" in text:
-            context.user_data['language'] = 'sme'
-            await update.message.reply_text("✅ Lydspråk satt til: Nordsamisk")
-        
-        elif text in ['hjelp', 'help']:
-            await self._cmd_help(update, context)
-        
-        else:
-            await update.message.reply_text(
-                "🤔 Send meg en lydfil først!\n\n"
-                "Jeg støtter: m4a, mp3, wav, ogg\n\n"
-                "Skriv /help for mer info."
-            )
-    
-    async def _handle_format_selection(self, update: Update, context: ContextTypes.DEFAULT_TYPE, text: str) -> None:
-        """Håndterer brukerens valg av format og språk."""
-        parts = text.split()
-        
-        # Standard verdier
-        output_format = "transcript"  # eller "summary"
-        doc_language = "no"  # eller "en"
-        include_timestamps = False
-        audio_language = context.user_data.get('audio_language', 'no')
-        
-        # Parse valg
-        for part in parts:
-            if part == '1':
-                output_format = "transcript"
-            elif part == '2':
-                if self.summarizer.is_available():
-                    output_format = "summary"
-                else:
-                    await update.message.reply_text(
-                        "⚠️ Møtereferat krever OPENAI_API_KEY i .env\n"
-                        "Jeg lager full transkripsjon istedenfor."
+        return allowed
+
+    @staticmethod
+    def _language_keyboard(job_id: str) -> InlineKeyboardMarkup:
+        return InlineKeyboardMarkup(
+            [
+                [InlineKeyboardButton("Norsk", callback_data=f"lang:{job_id}:no")],
+                [
+                    InlineKeyboardButton(
+                        "Nordsamisk", callback_data=f"lang:{job_id}:sme"
                     )
-                    output_format = "transcript"
-            elif part == 'n':
-                doc_language = "no"
-            elif part == 'e':
-                doc_language = "en"
-            elif part in ['tidsstempel', 'timestamp', 't']:
-                include_timestamps = True
-        
-        # Hent filinfo
-        file_path = context.user_data.pop('pending_file', None)
-        file_name = context.user_data.pop('file_name', 'unknown')
-        
-        if not file_path or not os.path.exists(file_path):
-            await update.message.reply_text("❌ Filen ble ikke funnet. Send på nytt.")
-            return
-        
-        # Start prosessering
-        await self._process_transcription(
-            update, context, file_path, file_name, 
-            audio_language, doc_language, include_timestamps, output_format
+                ],
+                [
+                    InlineKeyboardButton(
+                        "Automatisk – eksperimentell",
+                        callback_data=f"lang:{job_id}:auto",
+                    )
+                ],
+            ]
         )
-    
-    async def _process_transcription(
-        self,
-        update: Update,
-        context: ContextTypes.DEFAULT_TYPE,
-        file_path: str,
-        file_name: str,
-        audio_language: str,
-        doc_language: str,
-        include_timestamps: bool,
-        output_format: str = "transcript"
+
+    @staticmethod
+    def _output_keyboard(job_id: str) -> InlineKeyboardMarkup:
+        return InlineKeyboardMarkup(
+            [
+                [
+                    InlineKeyboardButton("TXT", callback_data=f"out:{job_id}:txt"),
+                    InlineKeyboardButton("Word", callback_data=f"out:{job_id}:docx"),
+                ],
+                [InlineKeyboardButton("Begge", callback_data=f"out:{job_id}:both")],
+            ]
+        )
+
+    @staticmethod
+    def _output_name(value: str) -> str:
+        return {"txt": "TXT", "docx": "Word", "both": "TXT + Word"}.get(value, value)
+
+    @staticmethod
+    def _status_icon(status: str) -> str:
+        return {
+            "awaiting_language": "❔",
+            "awaiting_output": "❔",
+            "queued": "📦",
+            "processing": "📝",
+        }.get(status, "•")
+
+    @staticmethod
+    def _extension_for_mime(mime_type: str | None) -> str:
+        mime = (mime_type or "").lower()
+        if "mpeg" in mime:
+            return ".mp3"
+        if "mp4" in mime or "m4a" in mime:
+            return ".m4a"
+        if "wav" in mime:
+            return ".wav"
+        if "flac" in mime:
+            return ".flac"
+        return ".ogg"
+
+    async def _handle_error(
+        self, update: object, context: ContextTypes.DEFAULT_TYPE
     ) -> None:
-        """Prosesserer transkribering/referat og sender resultat."""
-        try:
-            logger.info(f"Starter: {file_name} | Format: {output_format} | Doc-språk: {doc_language}")
-            
-            # Transkriber alltid først
-            await update.message.reply_text(
-                f"🎙️ Transkriberer på {self._get_language_name(audio_language)}...\n"
-                "Dette kan ta noen minutter."
-            )
-            
-            segments = self.transcriber.transcribe(
-                file_path,
-                language=audio_language,
-                include_timestamps=include_timestamps
-            )
-            
-            logger.info(f"Transkribering fullført: {len(segments)} segmenter")
-            
-            if output_format == "summary" and self.summarizer.is_available():
-                # Generer møtereferat
-                await update.message.reply_text("🤖 Genererer møtereferat med AI...")
-                
-                # Slå sammen til én tekst
-                full_transcript = "\n\n".join([seg[0] for seg in segments])
-                
-                summary = self.summarizer.generate_meeting_summary(
-                    transcript=full_transcript,
-                    language=doc_language,
-                    meeting_title=f"Møte - {file_name}"
-                )
-                
-                # Generer referat-dokument
-                doc_path = self.doc_generator.generate_summary(
-                    summary=summary,
-                    original_filename=file_name,
-                    language=doc_language,
-                    transcript_segments=segments if include_timestamps else None
-                )
-                
-                caption = f"✅ Møtereferat ferdig!\n📄 Språk: {'Norsk' if doc_language == 'no' else 'English'}"
-                
-            else:
-                # Generer standard transkripsjon
-                await update.message.reply_text("📝 Genererer transkripsjonsdokument...")
-                
-                doc_path = self.doc_generator.generate(
-                    segments=segments,
-                    original_filename=file_name,
-                    language=doc_language,
-                    include_speakers=settings.include_speaker_detection,
-                    include_timestamps=include_timestamps
-                )
-                
-                caption = f"✅ Transkripsjon ferdig!\n📝 Språk: {self._get_language_name(audio_language)}\n📄 Dokument: {'Norsk' if doc_language == 'no' else 'English'}"
-            
-            # Send dokument
-            await update.message.reply_document(
-                document=open(doc_path, 'rb'),
-                caption=caption
-            )
-            
-            # Opprydding
-            if settings.delete_temp_files:
-                Path(file_path).unlink(missing_ok=True)
-                doc_path.unlink(missing_ok=True)
-            
-            # Reset brukerdata
-            context.user_data.clear()
-            
-        except Exception as e:
-            logger.error(f"Feil ved prosessering: {e}")
-            await update.message.reply_text(f"❌ Feil: {str(e)}")
-    
-    async def _download_file(self, file_obj, context: ContextTypes.DEFAULT_TYPE, suffix: str = ".tmp") -> str:
-        """Laster ned fil fra Telegram."""
-        file = await context.bot.get_file(file_obj.file_id)
-        
-        # Bruk riktig filendelse basert på type
-        if hasattr(file_obj, 'mime_type'):
-            mime_type = file_obj.mime_type or ""
-            logger.info(f"MIME-type: {mime_type}")
-            if "ogg" in mime_type:
-                suffix = ".ogg"
-            elif "mp3" in mime_type:
-                suffix = ".mp3"
-            elif "mp4" in mime_type:
-                suffix = ".m4a"
-            elif "wav" in mime_type:
-                suffix = ".wav"
-        
-        file_path = self.temp_dir / f"{file_obj.file_id}{suffix}"
-        await file.download_to_drive(file_path)
-        
-        # Logg filinfo
-        import os
-        file_size = os.path.getsize(file_path)
-        logger.info(f"Fil lastet ned: {file_path} ({file_size} bytes)")
-        
-        return str(file_path)
-    
-    def _detect_language(self, context: ContextTypes.DEFAULT_TYPE) -> str:
-        """Detekterer ønsket språk."""
-        return context.user_data.get('language', settings.default_language)
-    
-    def _detect_timestamp_request(self, context: ContextTypes.DEFAULT_TYPE) -> bool:
-        """Sjekker om bruker vil ha tidsstempler."""
-        return context.user_data.get('include_timestamps', settings.include_timestamp)
-    
-    def _is_audio_file(self, filename: str) -> bool:
-        """Sjekker om fil er lydfil."""
-        audio_extensions = {'.m4a', '.mp3', '.wav', '.ogg', '.oga', '.opus'}
-        return Path(filename).suffix.lower() in audio_extensions
-    
-    def _get_language_name(self, code: str) -> str:
-        """Returnerer lesbart språknavn."""
-        mapping = {
-            'no': 'Norsk',
-            'sme': 'Nordsamisk',
-            'en': 'Engelsk',
-            'nn': 'Nynorsk'
-        }
-        return mapping.get(code, code)
+        logger.error(
+            "Ubehandlet Telegram-feil for update=%r", update, exc_info=context.error
+        )
 
 
-def main():
-    """Entry point."""
-    bot = TranscriptionBot()
-    bot.run()
+def configure_logging(config: Settings) -> None:
+    Path(config.log_dir).mkdir(parents=True, exist_ok=True)
+    formatter = logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s")
+    file_handler = logging.handlers.RotatingFileHandler(
+        Path(config.log_dir) / "telegram-transcriber.log",
+        maxBytes=config.log_max_bytes,
+        backupCount=config.log_backup_count,
+        encoding="utf-8",
+    )
+    file_handler.setFormatter(formatter)
+    console_handler = logging.StreamHandler()
+    console_handler.setFormatter(formatter)
+    logging.basicConfig(
+        level=getattr(logging, config.log_level.upper(), logging.INFO),
+        handlers=[file_handler, console_handler],
+        force=True,
+    )
 
 
-if __name__ == '__main__':
+def main() -> None:
+    configure_logging(settings)
+    TranscriptionBot(settings).run()
+
+
+if __name__ == "__main__":
     main()
