@@ -239,9 +239,15 @@ class Transcriber:
                 samples,
                 sampling_rate=self.config.sample_rate,
                 return_tensors="pt",
-                truncation=not is_long_form,
-                padding="longest" if is_long_form else "max_length",
                 return_attention_mask=True,
+                **self._processor_options(duration),
+            )
+            feature_frames = int(inputs.input_features.shape[-1])
+            max_source_positions = int(
+                getattr(self.model.config, "max_source_positions", 1500)
+            )
+            self._assert_longform_input_coverage(
+                duration, feature_frames, max_source_positions
             )
             input_features = inputs.input_features.to(
                 self.device, dtype=self.model.dtype
@@ -253,7 +259,6 @@ class Transcriber:
             generation: dict = {
                 "input_features": input_features,
                 "return_timestamps": True,
-                "task": "transcribe",
                 "num_beams": self.config.num_beams,
                 "condition_on_prev_tokens": True,
                 "temperature": self.config.temperatures,
@@ -263,10 +268,7 @@ class Transcriber:
             }
             if attention_mask is not None:
                 generation["attention_mask"] = attention_mask
-            # Northern Sámi is not an original Whisper language token. The SME
-            # fine-tune is therefore allowed to use its own generation config.
-            if language == "no":
-                generation["language"] = "no"
+            generation.update(self._language_generation_options(language))
             if prompt:
                 prompt_ids = self.processor.get_prompt_ids(prompt, return_tensors="pt")
                 maximum = max(2, int(self.model.config.max_target_positions // 2 - 1))
@@ -290,7 +292,14 @@ class Transcriber:
 
             with torch.inference_mode():
                 generated = self.model.generate(**generation)
-            return self._decode_generated(generated, offset_seconds, duration)
+            decoded = self._decode_generated(generated, offset_seconds, duration)
+            self._assert_longform_output_coverage(
+                decoded,
+                samples,
+                offset_seconds=offset_seconds,
+                duration=duration,
+            )
+            return decoded
         except TranscriptionCancelled:
             raise
         except RuntimeError:
@@ -313,6 +322,74 @@ class Transcriber:
                     allow_mps_fallback=False,
                 )
             raise
+
+    @staticmethod
+    def _language_generation_options(language: str) -> dict[str, str]:
+        """Preserve the SME fine-tune's decoder IDs instead of forcing a language."""
+        if language == "sme":
+            # Northern Sámi is not an original Whisper language token. This
+            # fine-tune uses its own forced decoder IDs, including a surrogate
+            # language token. Passing either language="sme" or a generic task
+            # makes Transformers discard those model-specific IDs.
+            return {}
+        options = {"task": "transcribe"}
+        if language == "no":
+            options["language"] = "no"
+        return options
+
+    @staticmethod
+    def _processor_options(duration: float) -> dict[str, str | bool]:
+        """Never let the feature extractor cut long recordings to 30 seconds."""
+        is_long_form = duration > 30
+        return {
+            "truncation": not is_long_form,
+            "padding": "longest" if is_long_form else "max_length",
+        }
+
+    @staticmethod
+    def _assert_longform_input_coverage(
+        duration: float, feature_frames: int, max_source_positions: int
+    ) -> None:
+        """Fail instead of silently sending only Whisper's first 30-second window."""
+        short_form_frames = max_source_positions * 2
+        if duration > 30 and feature_frames <= short_form_frames:
+            raise RuntimeError(
+                "Lang lyd ble trunkert til Whispers 30-sekundersvindu før "
+                "transkribering. Jobben stoppes uten å levere et ufullstendig resultat."
+            )
+
+    def _assert_longform_output_coverage(
+        self,
+        segments: list[TranscriptSegment],
+        samples: np.ndarray,
+        *,
+        offset_seconds: float,
+        duration: float,
+    ) -> None:
+        """Reject an early-stopped transcript when substantial audible audio remains."""
+        if duration <= 30:
+            return
+        relative_end = max(
+            (segment.end - offset_seconds for segment in segments), default=0.0
+        )
+        if relative_end >= duration - 30:
+            return
+        tail_start = min(duration, max(0.0, relative_end + 5))
+        start_sample = int(tail_start * self.config.sample_rate)
+        tail = samples[start_sample:]
+        frame_size = self.config.sample_rate
+        complete_frames = len(tail) // frame_size
+        if complete_frames <= 0:
+            return
+        framed = tail[: complete_frames * frame_size].reshape(
+            complete_frames, frame_size
+        )
+        rms = np.sqrt(np.mean(np.square(framed, dtype=np.float64), axis=1))
+        if int(np.count_nonzero(rms >= 0.01)) >= 2:
+            raise RuntimeError(
+                "Whisper-resultatet stoppet før den hørbare lyden var ferdig. "
+                "Jobben stoppes uten å levere en trunkert transkripsjon."
+            )
 
     def _decode_generated(
         self, generated, offset: float, duration: float

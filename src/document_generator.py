@@ -52,7 +52,7 @@ class DocumentGenerator:
         document = Document()
         self._setup_document(document)
 
-        title = document.add_heading("Transkripsjon", level=0)
+        title = document.add_heading("Ren transkripsjon", level=0)
         title.alignment = WD_ALIGN_PARAGRAPH.CENTER
         subtitle = document.add_paragraph()
         subtitle.alignment = WD_ALIGN_PARAGRAPH.CENTER
@@ -67,6 +67,10 @@ class DocumentGenerator:
             ("Talespråk", Settings.get_language_name(result.language)),
             ("Modell", result.model_name),
             ("Varighet", self._format_timestamp(result.duration_seconds)),
+            (
+                "Behandling",
+                "Whisper-transkripsjon uten oversettelse, språkvask eller sammendrag",
+            ),
         )
         for label, value in metadata:
             paragraph = document.add_paragraph()
