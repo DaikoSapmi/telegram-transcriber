@@ -184,6 +184,20 @@ def main() -> None:
                 )
             )
 
+            legacy_label = "no.daiko.ailo-transcriber"
+            legacy_launchctl = subprocess.run(
+                ["launchctl", "print", f"gui/{os.getuid()}/{legacy_label}"],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            checks.append(
+                _result(
+                    legacy_launchctl.returncode != 0,
+                    "Gammel Ailo 2.0 LaunchAgent er stoppet",
+                )
+            )
+
     if not all(checks):
         raise SystemExit(1)
     print("\nAlle kontroller bestått.")
