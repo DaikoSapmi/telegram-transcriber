@@ -5,7 +5,6 @@ PROJECT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 TEMPLATE_DIR="$PROJECT_DIR/launchd"
 LAUNCH_AGENTS_DIR="$HOME/Library/LaunchAgents"
 TRANSCRIBER_NAME="com.daikosapmi.telegram-transcriber"
-LEGACY_TRANSCRIBER_NAME="no.daiko.ailo-transcriber"
 mkdir -p "$LAUNCH_AGENTS_DIR" "$PROJECT_DIR/logs"
 
 cd "$PROJECT_DIR"
@@ -26,15 +25,6 @@ stop_existing_transcribers() {
     local -a competing_processes=()
 
     launchctl bootout "gui/$(id -u)/$TRANSCRIBER_NAME" >/dev/null 2>&1 || true
-
-    if launchctl print "gui/$(id -u)/$LEGACY_TRANSCRIBER_NAME" >/dev/null 2>&1; then
-        echo "Stopper og deaktiverer gammel Ailo LaunchAgent: $LEGACY_TRANSCRIBER_NAME"
-        launchctl bootout "gui/$(id -u)/$LEGACY_TRANSCRIBER_NAME"
-    fi
-    if [[ -f "$LAUNCH_AGENTS_DIR/$LEGACY_TRANSCRIBER_NAME.plist" ]]; then
-        launchctl disable "gui/$(id -u)/$LEGACY_TRANSCRIBER_NAME"
-        echo "Gammel LaunchAgent er deaktivert permanent. Plist-filen er beholdt."
-    fi
 
     while read -r pid command; do
         if [[ "$command" != *"src.telegram_bot"* && "$command" != *telegram_bot*.py* ]]; then
