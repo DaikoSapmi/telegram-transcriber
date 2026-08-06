@@ -173,24 +173,9 @@ python3 scripts/diagnose_local_setup.py
 
 Installasjonsskriptet stopper eldre Ailo-prosesser fra samme prosjektmappe før
 den nye prosessen startes. Det avbryter med PID og mappe hvis en konkurrerende
-Telegram-transcriber fra en annen mappe fremdeles kjører. Den kjente gamle
-OpenClaw-tjenesten `no.daiko.ailo-transcriber`, som starter
-`telegram_bot_full.py`, stoppes og deaktiveres automatisk; plist-filen beholdes
-slik at handlingen kan reverseres. Send deretter
+Telegram-transcriber fra en annen mappe fremdeles kjører. Send deretter
 `/version` til Ailo. For denne utgaven skal svaret inneholde
 `pure-transcription-2026.08.06` og `ingen Gemini`.
-
-Hvis hele den gamle OpenClaw-installasjonen ikke lenger skal brukes, kan alle
-LaunchAgents som peker på `~/.openclaw` deaktiveres og alle tilhørende prosesser
-stoppes med:
-
-```bash
-./scripts/disable_openclaw_macos.sh
-./scripts/install_launchd.sh
-python3 scripts/diagnose_local_setup.py
-```
-
-Oppryddingen sletter ingen filer eller data under `~/.openclaw`.
 
 ## Telegram-forløp
 
