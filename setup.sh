@@ -28,4 +28,9 @@ if [[ ! -f ".env" ]]; then
 fi
 chmod 600 .env
 
+echo
+echo "Laster ned og validerer begge Whisper-modellene."
+echo "Første installasjon trenger omtrent 12,4 GB modellvekter og viser fremdrift underveis."
+"$PROJECT_DIR/venv/bin/python" scripts/download_models.py
+
 echo "Oppsett fullført. Kjør ./start.sh, eller installer launchd med ./scripts/install_launchd.sh."

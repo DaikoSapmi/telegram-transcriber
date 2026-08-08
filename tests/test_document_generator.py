@@ -28,7 +28,7 @@ def test_txt_is_plain_and_docx_contains_real_metadata(tmp_path: Path):
     assert "Nordsamisk" in document_text
     assert "[00:01:02]" in document_text
     assert "Ren transkripsjon" in document_text
-    assert "Ailo-versjon: pure-transcription-2026.08.06" in document_text
+    assert "Ailo-versjon: pure-transcription-2026.08.08" in document_text
     assert "uten oversettelse, språkvask eller sammendrag" in document_text
     assert "Gemini (Google AI)" not in document_text
     assert "Ailo 2.0" not in document_text

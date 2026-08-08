@@ -28,6 +28,7 @@ from telegram.ext import (
 from config.settings import Settings, settings
 from src.job_processor import JobProcessor
 from src.job_queue import JobQueue, TranscriptionJob
+from src.model_cache import model_is_cached
 from src.release import AILO_RELEASE
 from src.transcriber import TranscriptionCancelled
 
@@ -222,6 +223,8 @@ class TranscriptionBot:
         worker_ok = bool(self.worker_task and not self.worker_task.done())
         api_ok = await self._local_api_is_reachable()
         directories_ok = self._runtime_directories_are_writable()
+        model_checks = await asyncio.to_thread(self._model_cache_checks)
+        models_ok = all(ok for _language, ok in model_checks)
         try:
             jobs = self.queue.all_jobs()
             queue_ok = True
@@ -237,7 +240,7 @@ class TranscriptionBot:
             for job in jobs
             if job.status in {"awaiting_language", "awaiting_output"}
         ]
-        all_ok = worker_ok and api_ok and directories_ok and queue_ok
+        all_ok = worker_ok and api_ok and directories_ok and models_ok and queue_ok
         lines = [
             "✅ Driftstatus: alle hovedkomponenter svarer"
             if all_ok
@@ -258,6 +261,11 @@ class TranscriptionBot:
             (
                 f"{'✅' if directories_ok else '❌'} Arbeidsmapper: "
                 f"{'skrivbare' if directories_ok else 'ikke skrivbare'}"
+            ),
+            *(
+                f"{'✅' if ok else '❌'} {language} Whisper-modell: "
+                f"{'nedlastet' if ok else 'mangler'}"
+                for language, ok in model_checks
             ),
             "",
             "Køoversikt:",
@@ -312,6 +320,12 @@ class TranscriptionBot:
                 Path(self.config.log_dir),
                 Path(self.config.queue_db).parent,
             )
+        )
+
+    def _model_cache_checks(self) -> tuple[tuple[str, bool], ...]:
+        return (
+            ("Norsk", model_is_cached(self.config.norwegian_model)),
+            ("Nordsamisk", model_is_cached(self.config.sami_model)),
         )
 
     @staticmethod
