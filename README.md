@@ -127,7 +127,22 @@ python3 scripts/diagnose_local_setup.py
 
 Den lokale serveren bindes uttrykkelig til `127.0.0.1`, bruker roterende logg og leser `api_id`/`api_hash` fra `.env`. Ingen domene, portåpning eller TLS-konfigurasjon er nødvendig for polling.
 
-Første modellbruk laster ned mange gigabyte fra Hugging Face og tar derfor tid.
+`./setup.sh` laster ned og validerer begge modellene før Ailo startes. Fremdriften
+vises i terminalen, etterfulgt av en grønn kontroll for norsk og nordsamisk.
+Transformers-vektene er omtrent 6,17 GB per modell, altså rundt 12,4 GB samlet,
+i tillegg til små konfigurasjons- og tokeniseringsfiler. Modellarkivene på Hugging
+Face er større fordi de også inneholder alternative formater og treningsfiler som
+Ailo ikke laster ned.
+
+Kontroller modellene senere uten nettverk eller ny nedlasting:
+
+```bash
+./venv/bin/python scripts/download_models.py --check-only
+```
+
+Ailo bruker bare lokalt validerte modellfiler under transkribering. Den første
+innlastingen av en modell fra disk kan fortsatt ta litt tid, men lydjobben starter
+ikke lenger en skjult modellnedlasting.
 
 ### Test av fil over 20 MB
 
@@ -175,7 +190,7 @@ Installasjonsskriptet stopper eldre Ailo-prosesser fra samme prosjektmappe før
 den nye prosessen startes. Det avbryter med PID og mappe hvis en konkurrerende
 Telegram-transcriber fra en annen mappe fremdeles kjører. Send deretter
 `/version` til Ailo. For denne utgaven skal svaret inneholde
-`pure-transcription-2026.08.06` og `ingen Gemini`.
+`pure-transcription-2026.08.08` og `ingen Gemini`.
 
 ## Telegram-forløp
 
@@ -191,9 +206,10 @@ Telegram-transcriber fra en annen mappe fremdeles kjører. Send deretter
 
 `/driftstatus` (alias `/health`) kontrollerer at Ailo-boten, køarbeideren,
 den lokale Telegram Bot API-serveren, SQLite-køen og arbeidsmappene svarer. Den
-viser også antall jobber som behandles, venter i kø eller venter på et
-brukervalg, samt siste registrerte arbeidersignal. Bruk `/status` for filnavn,
-prosent og køplass for egne jobber.
+viser en grønn eller rød kontroll for hver av de to Whisper-modellene, antall
+jobber som behandles, venter i kø eller venter på et brukervalg, samt siste
+registrerte arbeidersignal. Bruk `/status` for filnavn, prosent og køplass for
+egne jobber.
 
 `/hjelp` viser en kort oversikt over alle tilgjengelige Ailo-kommandoer.
 

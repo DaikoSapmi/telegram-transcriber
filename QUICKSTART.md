@@ -13,6 +13,11 @@ Kjør deretter hele veiviseren:
 
 Veiviseren bygger den offisielle lokale Bot API-serveren, setter opp Python, lagrer hemmelighetene i `.env`, utfører kontroller og tilbyr engangsovergang samt automatisk oppstart.
 
+Første oppsett laster ned omtrent 12,4 GB Whisper-modellvekter med synlig
+fremdrift og avslutter med en grønn kontroll for både norsk og nordsamisk modell.
+Senere kan modellene kontrolleres uten nettverk med
+`./venv/bin/python scripts/download_models.py --check-only`.
+
 I Telegram velger du språket som faktisk snakkes i lydfilen:
 `Norsk tale → norsk tekst` eller
 `Nordsamisk tale → nordsamisk tekst`. Ailo leverer hele den rene
@@ -32,6 +37,6 @@ mens `/hjelp` viser alle kommandoene.
 Etter en kodeoppdatering kjører du `./scripts/install_launchd.sh` på nytt. Det
 stopper en gammel Ailo-prosess fra denne prosjektmappen før den nye startes.
 Send `/version` til Ailo og kontroller at svaret viser
-`pure-transcription-2026.08.06` og `ingen Gemini`.
+`pure-transcription-2026.08.08` og `ingen Gemini`.
 
 Se [README.md](README.md) for manuelle enkeltsteg og feilsøking.

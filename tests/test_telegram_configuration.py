@@ -43,7 +43,7 @@ def test_local_bot_api_urls_are_applied(tmp_path: Path):
     assert "driftstatus" in commands
     assert "health" in commands
     assert "hjelp" in commands
-    assert AILO_RELEASE == "pure-transcription-2026.08.06"
+    assert AILO_RELEASE == "pure-transcription-2026.08.08"
 
 
 def test_language_choice_is_explicit_and_has_no_automatic_frontend_option():
@@ -88,6 +88,7 @@ def test_runtime_health_reports_components_and_empty_queue(tmp_path: Path):
     bot = TranscriptionBot(config)
     bot.worker_task = SimpleNamespace(done=lambda: False)
     bot._local_api_is_reachable = AsyncMock(return_value=True)
+    bot._model_cache_checks = lambda: (("Norsk", True), ("Nordsamisk", True))
     reply_text = AsyncMock()
     update = SimpleNamespace(
         effective_chat=SimpleNamespace(type="private"),
@@ -101,6 +102,8 @@ def test_runtime_health_reports_components_and_empty_queue(tmp_path: Path):
     assert "alle hovedkomponenter svarer" in message
     assert "Køarbeider: kjører" in message
     assert "Lokal Telegram Bot API: svarer" in message
+    assert "✅ Norsk Whisper-modell: nedlastet" in message
+    assert "✅ Nordsamisk Whisper-modell: nedlastet" in message
     assert "Behandles nå: 0" in message
     assert "Venter i kø: 0" in message
     assert "Bruk /status" in message
@@ -111,6 +114,37 @@ def test_runtime_health_formats_heartbeat_age():
     assert TranscriptionBot._format_elapsed(45) == "for 45 sekunder siden"
     assert TranscriptionBot._format_elapsed(125) == "for 2 minutter siden"
     assert TranscriptionBot._format_elapsed(7200) == "for 2 timer siden"
+
+
+def test_runtime_health_marks_a_missing_model(tmp_path: Path):
+    config = Settings(
+        telegram_bot_token="123456789:ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghi",
+        telegram_local_mode=True,
+        data_dir=str(tmp_path),
+        temp_dir=str(tmp_path / "incoming"),
+        work_dir=str(tmp_path / "work"),
+        output_dir=str(tmp_path / "output"),
+        debug_dir=str(tmp_path / "debug"),
+        queue_db=str(tmp_path / "jobs.sqlite3"),
+        log_dir=str(tmp_path / "logs"),
+    )
+    bot = TranscriptionBot(config)
+    bot.worker_task = SimpleNamespace(done=lambda: False)
+    bot._local_api_is_reachable = AsyncMock(return_value=True)
+    bot._model_cache_checks = lambda: (("Norsk", True), ("Nordsamisk", False))
+    reply_text = AsyncMock()
+    update = SimpleNamespace(
+        effective_chat=SimpleNamespace(type="private"),
+        effective_user=SimpleNamespace(id=42, username="daiko"),
+        effective_message=SimpleNamespace(reply_text=reply_text),
+    )
+
+    asyncio.run(bot._cmd_runtime_health(update, None))
+
+    message = reply_text.await_args.args[0]
+    assert "minst én kontroll feilet" in message
+    assert "✅ Norsk Whisper-modell: nedlastet" in message
+    assert "❌ Nordsamisk Whisper-modell: mangler" in message
 
 
 def test_runtime_health_reports_one_processing_and_one_queued_job(tmp_path: Path):
@@ -142,6 +176,7 @@ def test_runtime_health_reports_one_processing_and_one_queued_job(tmp_path: Path
     bot.queue.update_progress(current.id, 37, "Transkriberer del 1 av 2")
     bot.worker_task = SimpleNamespace(done=lambda: False)
     bot._local_api_is_reachable = AsyncMock(return_value=True)
+    bot._model_cache_checks = lambda: (("Norsk", True), ("Nordsamisk", True))
     reply_text = AsyncMock()
     update = SimpleNamespace(
         effective_chat=SimpleNamespace(type="private"),

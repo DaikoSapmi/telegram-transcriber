@@ -170,10 +170,19 @@ class Transcriber:
         device = self._forced_device or self._select_device(torch)
         dtype = torch.float16 if device in {"mps", "cuda"} else torch.float32
         logger.info("Laster %s på %s med %s", model_name, device, dtype)
-        processor = AutoProcessor.from_pretrained(model_name)
-        model = WhisperForConditionalGeneration.from_pretrained(
-            model_name, torch_dtype=dtype
-        )
+        try:
+            processor = AutoProcessor.from_pretrained(model_name, local_files_only=True)
+            model = WhisperForConditionalGeneration.from_pretrained(
+                model_name,
+                torch_dtype=dtype,
+                local_files_only=True,
+                use_safetensors=True,
+            )
+        except OSError as error:
+            raise RuntimeError(
+                f"Whisper-modellen {model_name} finnes ikke komplett lokalt. "
+                "Kjør ./venv/bin/python scripts/download_models.py og prøv igjen."
+            ) from error
         try:
             model.to(device)
         except (NotImplementedError, RuntimeError):
