@@ -5,10 +5,58 @@ PROJECT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 TEMPLATE_DIR="$PROJECT_DIR/launchd"
 LAUNCH_AGENTS_DIR="$HOME/Library/LaunchAgents"
 TRANSCRIBER_NAME="com.daikosapmi.telegram-transcriber"
+LAUNCH_DOMAIN="gui/$(id -u)"
 mkdir -p "$LAUNCH_AGENTS_DIR" "$PROJECT_DIR/logs"
 
 cd "$PROJECT_DIR"
+echo "Installerer Ailo fra: $PROJECT_DIR"
 python3 scripts/diagnose_local_setup.py --preflight --require-migration
+
+wait_until_unloaded() {
+    local name="$1"
+
+    for _attempt in {1..40}; do
+        if ! launchctl print "$LAUNCH_DOMAIN/$name" >/dev/null 2>&1; then
+            return 0
+        fi
+        sleep 0.25
+    done
+    return 1
+}
+
+unload_agent() {
+    local name="$1"
+    local target="$2"
+
+    launchctl bootout "$LAUNCH_DOMAIN/$name" >/dev/null 2>&1 \
+        || launchctl bootout "$LAUNCH_DOMAIN" "$target" >/dev/null 2>&1 \
+        || true
+    if ! wait_until_unloaded "$name"; then
+        echo "LaunchAgent $name ble ikke ferdig utlastet etter 10 sekunder." >&2
+        launchctl print "$LAUNCH_DOMAIN/$name" >&2 || true
+        exit 1
+    fi
+}
+
+bootstrap_agent() {
+    local name="$1"
+    local target="$2"
+    local bootstrap_error=""
+
+    launchctl enable "$LAUNCH_DOMAIN/$name" >/dev/null 2>&1 || true
+    for _attempt in {1..5}; do
+        if bootstrap_error="$(launchctl bootstrap "$LAUNCH_DOMAIN" "$target" 2>&1)"; then
+            return 0
+        fi
+        sleep 1
+    done
+
+    echo "Kunne ikke registrere LaunchAgent $name etter fem forsøk." >&2
+    echo "$bootstrap_error" >&2
+    /usr/bin/plutil -lint "$target" >&2 || true
+    echo "Prøv: launchctl print $LAUNCH_DOMAIN/$name" >&2
+    exit 1
+}
 
 project_transcriber_pids() {
     local pid command
@@ -24,7 +72,9 @@ stop_existing_transcribers() {
     local -a stopped_pids=()
     local -a competing_processes=()
 
-    launchctl bootout "gui/$(id -u)/$TRANSCRIBER_NAME" >/dev/null 2>&1 || true
+    unload_agent \
+        "$TRANSCRIBER_NAME" \
+        "$LAUNCH_AGENTS_DIR/$TRANSCRIBER_NAME.plist"
 
     while read -r pid command; do
         if [[ "$command" != *"src.telegram_bot"* && "$command" != *telegram_bot*.py* ]]; then
@@ -85,7 +135,7 @@ verify_transcriber_runtime() {
     done
     if [[ -z "$running_pids" ]]; then
         echo "Den nye Ailo-prosessen startet ikke. Se logs/telegram-transcriber.stderr.log." >&2
-        launchctl print "gui/$(id -u)/$TRANSCRIBER_NAME" || true
+        launchctl print "$LAUNCH_DOMAIN/$TRANSCRIBER_NAME" || true
         exit 1
     fi
 
@@ -100,9 +150,8 @@ install_plist() {
     local target="$LAUNCH_AGENTS_DIR/$name.plist"
     local escaped_project="${PROJECT_DIR//&/\\&}"
     /usr/bin/sed "s|__PROJECT_DIR__|$escaped_project|g" "$source" > "$target"
-    launchctl bootout "gui/$(id -u)/$name" >/dev/null 2>&1 || true
-    launchctl bootstrap "gui/$(id -u)" "$target"
-    launchctl enable "gui/$(id -u)/$name"
+    unload_agent "$name" "$target"
+    bootstrap_agent "$name" "$target"
 }
 
 install_plist "com.daikosapmi.telegram-bot-api"
@@ -111,5 +160,5 @@ verify_transcriber_runtime
 
 echo "LaunchAgents installert og startet."
 echo "Ailo-versjon: $(<AILO_RELEASE)"
-echo "Status: launchctl print gui/$(id -u)/$TRANSCRIBER_NAME"
+echo "Status: launchctl print $LAUNCH_DOMAIN/$TRANSCRIBER_NAME"
 echo "Send /version til Ailo i Telegram for å bekrefte kjørende kode."
