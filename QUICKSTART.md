@@ -25,6 +25,10 @@ python3 scripts/diagnose_local_setup.py
 ./scripts/create_large_test_audio.sh
 ```
 
+I Telegram viser `/driftstatus` om bot, køarbeider, lokal API, jobbkø og
+arbeidsmapper svarer. `/status` viser prosent og køplass for dine aktive jobber,
+mens `/hjelp` viser alle kommandoene.
+
 Etter en kodeoppdatering kjører du `./scripts/install_launchd.sh` på nytt. Det
 stopper en gammel Ailo-prosess fra denne prosjektmappen før den nye startes.
 Send `/version` til Ailo og kontroller at svaret viser

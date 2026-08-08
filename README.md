@@ -19,7 +19,7 @@ forkortet, oppsummert eller språkvasket.
 - entydige knapper for norsk tale → norsk tekst og nordsamisk tale → nordsamisk tekst
 - knapper for TXT, Word eller begge
 - SQLite-kø med én transkripsjon om gangen
-- `/status`, `/cancel` og `/help`
+- `/status`, `/driftstatus`, `/cancel`, `/help` og `/hjelp`
 - omstartssikre jobber og kontrollpunkter mellom hoveddeler
 - FFmpeg-normalisering til 16 kHz mono PCM
 - behovsstyrt modellbytte, slik at bare én stor modell er lastet
@@ -188,6 +188,14 @@ Telegram-transcriber fra en annen mappe fremdeles kjører. Send deretter
    språkvask eller sammendrag, og kildelyden slettes lokalt.
 
 `/cancel <jobb-id>` kan brukes for en bestemt jobb. Uten ID avbrytes brukerens nyeste aktive jobb. Med nyere Transformers-versjoner kontrolleres avbrudd også mellom Whispers interne segmenter; ellers stoppes jobben mellom hoveddeler.
+
+`/driftstatus` (alias `/health`) kontrollerer at Ailo-boten, køarbeideren,
+den lokale Telegram Bot API-serveren, SQLite-køen og arbeidsmappene svarer. Den
+viser også antall jobber som behandles, venter i kø eller venter på et
+brukervalg, samt siste registrerte arbeidersignal. Bruk `/status` for filnavn,
+prosent og køplass for egne jobber.
+
+`/hjelp` viser en kort oversikt over alle tilgjengelige Ailo-kommandoer.
 
 `/version` viser den aktive Ailo-utgaven og bekrefter at prosessen kjører uten
 Gemini eller annen etterbehandling.
