@@ -20,12 +20,12 @@ forkortet, oppsummert eller språkvasket.
 - knapper for TXT, Word eller begge
 - SQLite-kø med én transkripsjon om gangen
 - `/status`, `/driftstatus`, `/cancel`, `/help` og `/hjelp`
-- omstartssikre jobber og kontrollpunkter mellom hoveddeler
+- omstartssikre jobber og kontrollpunkter mellom korte Whisper-segmenter
 - FFmpeg-normalisering til 16 kHz mono PCM
 - behovsstyrt modellbytte, slik at bare én stor modell er lastet
-- sekvensiell Whisper-langform med tidsstempler, kontekst og temperatur-fallback
+- korte, uavhengige Whisper-segmenter som hindrer at feil forplanter seg
+- nordsamisk greedy-dekoding basert på lokal sammenligningstest
 - eksplisitt vern mot 30-sekunders inputtrunkering og tidlig avbrutt resultat
-- 3 sekunders overlapp og deduplisering med tidsstempler og tekst
 - MPS på Apple Silicon med automatisk CPU-fallback
 - ren UTF-8 TXT og Word med tidsstemplede segmenter
 - råsegmenter i JSON i 48 timer for feilsøking
@@ -190,7 +190,7 @@ Installasjonsskriptet stopper eldre Ailo-prosesser fra samme prosjektmappe før
 den nye prosessen startes. Det avbryter med PID og mappe hvis en konkurrerende
 Telegram-transcriber fra en annen mappe fremdeles kjører. Send deretter
 `/version` til Ailo. For denne utgaven skal svaret inneholde
-`pure-transcription-2026.08.08` og `ingen Gemini`.
+`pure-transcription-2026.08.08-segmented` og `ingen Gemini`.
 
 ## Telegram-forløp
 
@@ -202,7 +202,7 @@ Telegram-transcriber fra en annen mappe fremdeles kjører. Send deretter
 5. Hele den rene Whisper-transkripsjonen sendes tilbake uten oversettelse,
    språkvask eller sammendrag, og kildelyden slettes lokalt.
 
-`/cancel <jobb-id>` kan brukes for en bestemt jobb. Uten ID avbrytes brukerens nyeste aktive jobb. Med nyere Transformers-versjoner kontrolleres avbrudd også mellom Whispers interne segmenter; ellers stoppes jobben mellom hoveddeler.
+`/cancel <jobb-id>` kan brukes for en bestemt jobb. Uten ID avbrytes brukerens nyeste aktive jobb. Avbrudd kontrolleres mellom hvert korte Whisper-segment.
 
 `/driftstatus` (alias `/health`) kontrollerer at Ailo-boten, køarbeideren,
 den lokale Telegram Bot API-serveren, SQLite-køen og arbeidsmappene svarer. Den
@@ -216,24 +216,28 @@ egne jobber.
 `/version` viser den aktive Ailo-utgaven og bekrefter at prosessen kjører uten
 Gemini eller annen etterbehandling.
 
-## Langformprofil
+## Whisper-profil for lange opptak
 
 Standardprofilen er:
 
 ```text
-num_beams=5
+whisper_segment_seconds=10
+num_beams=5 (norsk)
+sami_num_beams=1 (nordsamisk)
 temperature=(0.0, 0.2, 0.4, 0.6, 0.8, 1.0)
 compression_ratio_threshold=2.4
 logprob_threshold=-1.0
 no_speech_threshold=0.6
-condition_on_prev_tokens=true
-main_chunk=15 minutter
-overlap=3 sekunder
+condition_on_prev_tokens=false
 ```
 
 `COMPRESSION_RATIO_THRESHOLD=1.35` er en alternativ testprofil. Bruk manuelt korrigerte utdrag før verdien endres permanent.
 
-`TRANSCRIPTION_GLOSSARY` kan inneholde samiske navn, stedsnavn, organisasjoner og andre spesialord. Ordlisten kombineres med slutten av forrige hoveddel som prompt til neste del.
+`TRANSCRIPTION_GLOSSARY` kan inneholde samiske navn, stedsnavn,
+organisasjoner og andre spesialord. Den samme ordlisten brukes som prompt til
+hvert segment, men teksten fra forrige segment mates ikke tilbake til Whisper.
+Dermed kan en feilhøring ikke utvikle seg til repetisjoner gjennom resten av
+opptaket.
 
 ## Lagring og personvern
 
