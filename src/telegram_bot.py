@@ -5,12 +5,14 @@ from __future__ import annotations
 import asyncio
 import logging
 import logging.handlers
+import os
 import shutil
 import time
 import uuid
 from contextlib import suppress
 from pathlib import Path
 from typing import ClassVar
+from urllib.parse import urlparse
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.error import TelegramError
@@ -64,6 +66,7 @@ class TranscriptionBot:
         self.worker_wakeup: asyncio.Event | None = None
         self.stopping = False
         self.last_maintenance = 0.0
+        self.worker_heartbeat = time.monotonic()
 
     def run(self) -> None:
         self.config.validate()
@@ -94,7 +97,11 @@ class TranscriptionBot:
 
         application.add_handler(CommandHandler("start", self._cmd_start))
         application.add_handler(CommandHandler("help", self._cmd_help))
+        application.add_handler(CommandHandler("hjelp", self._cmd_commands))
         application.add_handler(CommandHandler("version", self._cmd_version))
+        application.add_handler(
+            CommandHandler(("driftstatus", "health"), self._cmd_runtime_health)
+        )
         application.add_handler(CommandHandler("status", self._cmd_status))
         application.add_handler(CommandHandler("cancel", self._cmd_cancel))
         application.add_handler(
@@ -147,9 +154,11 @@ class TranscriptionBot:
             f"{self.PURE_TRANSCRIPTION_NOTE}\n\n"
             "Talegjenkjenningen kjøres lokalt på Mac-en.\n\n"
             "/status – vis aktive jobber\n"
+            "/driftstatus – kontroller bot, køarbeider, lokal API og kø\n"
             "/cancel – avbryt siste aktive jobb\n"
             "/version – bekreft hvilken Ailo-versjon som kjører\n"
-            "/help – vis hjelp"
+            "/help – vis utfyllende veiledning\n"
+            "/hjelp – vis alle kommandoer"
         )
 
     async def _cmd_help(
@@ -171,8 +180,26 @@ class TranscriptionBot:
             "oversettelsesspråk.\n\n"
             f"{self.PURE_TRANSCRIPTION_NOTE}\n\n"
             "Jobbene kjøres én om gangen og overlever omstart. Bruk /status for fremdrift og "
-            "/cancel for å avbryte.\n\n"
+            "/cancel for å avbryte. Bruk /driftstatus for å kontrollere at bot, "
+            "køarbeider og lokal API svarer.\n\n"
             f"{local_note}"
+        )
+
+    async def _cmd_commands(
+        self, update: Update, _context: ContextTypes.DEFAULT_TYPE
+    ) -> None:
+        if not await self._authorize_message(update):
+            return
+        await update.effective_message.reply_text(
+            "Ailo-kommandoer:\n\n"
+            "/status – dine aktive jobber, prosent og køplass\n"
+            "/driftstatus – bot, køarbeider, lokal API og samlet kø\n"
+            "/cancel – avbryt din nyeste aktive jobb\n"
+            "/cancel <jobb-id> – avbryt en bestemt jobb\n"
+            "/version – vis aktiv Ailo-versjon og transkripsjonsmodus\n"
+            "/help – veiledning for filer, språk og behandling\n"
+            "/start – kort introduksjon\n"
+            "/hjelp – vis denne oversikten"
         )
 
     async def _cmd_version(
@@ -185,6 +212,117 @@ class TranscriptionBot:
             "Modus: ren lokal Whisper-transkripsjon\n"
             "Etterbehandling: ingen Gemini, oversettelse, språkvask eller sammendrag"
         )
+
+    async def _cmd_runtime_health(
+        self, update: Update, _context: ContextTypes.DEFAULT_TYPE
+    ) -> None:
+        if not await self._authorize_message(update):
+            return
+
+        worker_ok = bool(self.worker_task and not self.worker_task.done())
+        api_ok = await self._local_api_is_reachable()
+        directories_ok = self._runtime_directories_are_writable()
+        try:
+            jobs = self.queue.all_jobs()
+            queue_ok = True
+        except Exception:
+            logger.exception("Kunne ikke lese jobbkøen under driftstatus")
+            jobs = []
+            queue_ok = False
+
+        processing = [job for job in jobs if job.status == "processing"]
+        queued = [job for job in jobs if job.status == "queued"]
+        awaiting_choice = [
+            job
+            for job in jobs
+            if job.status in {"awaiting_language", "awaiting_output"}
+        ]
+        all_ok = worker_ok and api_ok and directories_ok and queue_ok
+        lines = [
+            "✅ Driftstatus: alle hovedkomponenter svarer"
+            if all_ok
+            else "⚠️ Driftstatus: minst én kontroll feilet",
+            f"✅ Ailo-bot: kjører ({AILO_RELEASE})",
+            (
+                f"{'✅' if worker_ok else '❌'} Køarbeider: "
+                f"{'kjører' if worker_ok else 'stoppet'}"
+            ),
+            (
+                f"{'✅' if api_ok else '❌'} Lokal Telegram Bot API: "
+                f"{'svarer' if api_ok else 'svarer ikke'}"
+            ),
+            (
+                f"{'✅' if queue_ok else '❌'} Jobbkø: "
+                f"{'kan leses' if queue_ok else 'kan ikke leses'}"
+            ),
+            (
+                f"{'✅' if directories_ok else '❌'} Arbeidsmapper: "
+                f"{'skrivbare' if directories_ok else 'ikke skrivbare'}"
+            ),
+            "",
+            "Køoversikt:",
+            f"📝 Behandles nå: {len(processing)}",
+            f"📦 Venter i kø: {len(queued)}",
+            f"⏳ Venter på brukerens valg: {len(awaiting_choice)}",
+        ]
+        if processing:
+            current = processing[0]
+            lines.append(f"Fremdrift nå: {current.progress}% · {current.progress_text}")
+        heartbeat_age = max(0.0, time.monotonic() - self.worker_heartbeat)
+        lines.append(
+            f"Siste signal fra køarbeideren: {self._format_elapsed(heartbeat_age)}"
+        )
+
+        user = update.effective_user
+        user_active = self.queue.active_for_user(user.id) if queue_ok else []
+        lines.extend(
+            (
+                "",
+                f"Dine aktive jobber: {len(user_active)}",
+                "Bruk /status for filnavn, prosent og køplass.",
+            )
+        )
+        await update.effective_message.reply_text("\n".join(lines))
+
+    async def _local_api_is_reachable(self) -> bool:
+        if not self.config.telegram_local_mode:
+            return True
+        parsed = urlparse(self.config.telegram_base_url)
+        host = parsed.hostname or "127.0.0.1"
+        port = parsed.port or 80
+        try:
+            _reader, writer = await asyncio.wait_for(
+                asyncio.open_connection(host, port), timeout=2
+            )
+        except (OSError, asyncio.TimeoutError):
+            return False
+        writer.close()
+        with suppress(Exception):
+            await writer.wait_closed()
+        return True
+
+    def _runtime_directories_are_writable(self) -> bool:
+        return all(
+            path.is_dir() and os.access(path, os.W_OK)
+            for path in (
+                Path(self.config.temp_dir),
+                Path(self.config.work_dir),
+                Path(self.config.output_dir),
+                Path(self.config.debug_dir),
+                Path(self.config.log_dir),
+                Path(self.config.queue_db).parent,
+            )
+        )
+
+    @staticmethod
+    def _format_elapsed(seconds: float) -> str:
+        if seconds < 5:
+            return "nå"
+        if seconds < 60:
+            return f"for {int(seconds)} sekunder siden"
+        if seconds < 3600:
+            return f"for {int(seconds // 60)} minutter siden"
+        return f"for {int(seconds // 3600)} timer siden"
 
     async def _cmd_status(
         self, update: Update, _context: ContextTypes.DEFAULT_TYPE
@@ -393,6 +531,7 @@ class TranscriptionBot:
 
     async def _worker_loop(self, application: Application) -> None:
         while not self.stopping:
+            self.worker_heartbeat = time.monotonic()
             job = self.queue.claim_next()
             if job:
                 try:
@@ -423,6 +562,7 @@ class TranscriptionBot:
         last_update = {"time": 0.0, "text": ""}
 
         def report(percent: int, text: str) -> None:
+            self.worker_heartbeat = time.monotonic()
             self.queue.update_progress(job.id, percent, text)
             now = time.monotonic()
             if progress_message and (
