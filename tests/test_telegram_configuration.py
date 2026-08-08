@@ -43,7 +43,7 @@ def test_local_bot_api_urls_are_applied(tmp_path: Path):
     assert "driftstatus" in commands
     assert "health" in commands
     assert "hjelp" in commands
-    assert AILO_RELEASE == "pure-transcription-2026.08.08"
+    assert AILO_RELEASE == "pure-transcription-2026.08.08-segmented"
 
 
 def test_language_choice_is_explicit_and_has_no_automatic_frontend_option():

@@ -71,11 +71,11 @@ class Settings:
     )
     asr_device: str = field(default_factory=lambda: os.getenv("ASR_DEVICE", "auto"))
     sample_rate: int = field(default_factory=lambda: _env_int("SAMPLE_RATE", 16_000))
-    main_chunk_seconds: int = field(
-        default_factory=lambda: _env_int("MAIN_CHUNK_SECONDS", 900)
+    whisper_segment_seconds: int = field(
+        default_factory=lambda: _env_int("WHISPER_SEGMENT_SECONDS", 10)
     )
-    overlap_seconds: int = field(default_factory=lambda: _env_int("OVERLAP_SECONDS", 3))
     num_beams: int = field(default_factory=lambda: _env_int("NUM_BEAMS", 5))
+    sami_num_beams: int = field(default_factory=lambda: _env_int("SAMI_NUM_BEAMS", 1))
     temperatures: tuple[float, ...] = field(
         default_factory=lambda: _env_temperatures(
             "TEMPERATURES", (0.0, 0.2, 0.4, 0.6, 0.8, 1.0)
@@ -169,14 +169,12 @@ class Settings:
             raise ValueError("MAX_FILE_SIZE_MB må være mellom 1 og 2000")
         if self.telegram_concurrent_updates < 1:
             raise ValueError("TELEGRAM_CONCURRENT_UPDATES må være minst 1")
-        if self.main_chunk_seconds < 31:
-            raise ValueError("MAIN_CHUNK_SECONDS må være minst 31")
-        if not 0 <= self.overlap_seconds < self.main_chunk_seconds / 2:
-            raise ValueError(
-                "OVERLAP_SECONDS må være null eller positiv og mindre enn halve hoveddelen"
-            )
+        if not 5 <= self.whisper_segment_seconds <= 30:
+            raise ValueError("WHISPER_SEGMENT_SECONDS må være mellom 5 og 30")
         if self.num_beams < 1:
             raise ValueError("NUM_BEAMS må være minst 1")
+        if self.sami_num_beams < 1:
+            raise ValueError("SAMI_NUM_BEAMS må være minst 1")
         if self.failed_retention_hours < 0 or self.debug_retention_hours < 0:
             raise ValueError("Oppbevaringstid kan ikke være negativ")
         if self.asr_device not in {"auto", "cpu", "mps", "cuda"}:

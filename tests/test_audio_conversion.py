@@ -48,7 +48,7 @@ def test_completed_checkpoint_finishes_without_loading_a_model(tmp_path: Path):
         audio.writeframes(frames.tobytes())
     shutil.copyfile(source, work / "normalized.wav")
 
-    config = Settings(main_chunk_seconds=60, overlap_seconds=3)
+    config = Settings(whisper_segment_seconds=10)
     transcriber = Transcriber(config)
     transcriber._write_checkpoint(
         work / "checkpoint.json",
@@ -64,3 +64,48 @@ def test_completed_checkpoint_finishes_without_loading_a_model(tmp_path: Path):
     result = transcriber.transcribe(source, "no", work)
     assert result.text == "Ferdig del."
     assert transcriber.model is None
+
+
+def test_long_recording_is_transcribed_as_independent_short_segments(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    source = tmp_path / "source.wav"
+    work = tmp_path / "work"
+    work.mkdir()
+    frames = array("h", [1000] * (25 * 16_000))
+    with wave.open(str(source), "wb") as audio:
+        audio.setnchannels(1)
+        audio.setsampwidth(2)
+        audio.setframerate(16_000)
+        audio.writeframes(frames.tobytes())
+    shutil.copyfile(source, work / "normalized.wav")
+
+    config = Settings(whisper_segment_seconds=10, sami_num_beams=1)
+    transcriber = Transcriber(config)
+    calls = []
+    monkeypatch.setattr(transcriber, "_ensure_model", lambda _model_name: None)
+
+    def fake_transcribe_window(
+        samples,
+        *,
+        language,
+        offset_seconds,
+        prompt,
+        monitor=None,
+        allow_mps_fallback=True,
+    ):
+        calls.append((len(samples), language, offset_seconds, prompt))
+        duration = len(samples) / config.sample_rate
+        return [
+            TranscriptSegment(
+                f"Del {len(calls)}.", offset_seconds, offset_seconds + duration
+            )
+        ]
+
+    monkeypatch.setattr(transcriber, "_transcribe_window", fake_transcribe_window)
+    result = transcriber.transcribe(source, "sme", work, glossary="Kárášjohka")
+
+    assert [call[0] for call in calls] == [160_000, 160_000, 80_000]
+    assert [call[2] for call in calls] == [0, 10, 20]
+    assert {call[3] for call in calls} == {"Ord og navn: Kárášjohka"}
+    assert result.text == "Del 1.\n\nDel 2.\n\nDel 3."

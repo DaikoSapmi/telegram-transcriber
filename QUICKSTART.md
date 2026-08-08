@@ -37,6 +37,6 @@ mens `/hjelp` viser alle kommandoene.
 Etter en kodeoppdatering kjører du `./scripts/install_launchd.sh` på nytt. Det
 stopper en gammel Ailo-prosess fra denne prosjektmappen før den nye startes.
 Send `/version` til Ailo og kontroller at svaret viser
-`pure-transcription-2026.08.08` og `ingen Gemini`.
+`pure-transcription-2026.08.08-segmented` og `ingen Gemini`.
 
 Se [README.md](README.md) for manuelle enkeltsteg og feilsøking.

@@ -8,11 +8,9 @@ import json
 import logging
 import math
 import os
-import re
 import subprocess
 import wave
 from collections.abc import Callable
-from difflib import SequenceMatcher
 from pathlib import Path
 
 import numpy as np
@@ -74,8 +72,7 @@ class Transcriber:
 
         self._checkpoint(cancelled)
         model_name = self.config.model_for_language(language)
-        chunk_seconds = self.config.main_chunk_seconds
-        overlap = self.config.overlap_seconds
+        chunk_seconds = self.config.whisper_segment_seconds
         chunk_count = max(1, math.ceil(duration / chunk_seconds))
         checkpoint_path = work / "checkpoint.json"
         start_index, merged = self._load_checkpoint(
@@ -86,8 +83,6 @@ class Transcriber:
             duration=duration,
             chunk_count=chunk_count,
         )
-        previous_context = self._context_tail(merged)
-
         if start_index:
             report(7, f"Gjenopptar fra del {start_index + 1} av {chunk_count}")
         if start_index < chunk_count:
@@ -98,15 +93,14 @@ class Transcriber:
             self._checkpoint(cancelled)
             core_start = index * chunk_seconds
             core_end = min(duration, (index + 1) * chunk_seconds)
-            window_start = max(0.0, core_start - overlap)
-            window_end = min(duration, core_end + overlap)
-            samples = self._read_wav_range(normalized, window_start, window_end)
+            samples = self._read_wav_range(normalized, core_start, core_end)
 
             percent = 10 + int(82 * index / chunk_count)
             report(percent, f"Transkriberer del {index + 1} av {chunk_count}")
-            prompt = self._build_prompt(
-                glossary or self.config.glossary, previous_context
-            )
+            # Every segment is intentionally independent. Feeding the previous
+            # output back into Whisper caused errors and repetitions to spread
+            # through the remainder of long Northern Sámi recordings.
+            prompt = self._build_prompt(glossary or self.config.glossary)
             progress_span = max(1.0, 82.0 / chunk_count)
 
             def monitor(
@@ -122,15 +116,11 @@ class Transcriber:
             window_segments = self._transcribe_window(
                 samples,
                 language=language,
-                offset_seconds=window_start,
+                offset_seconds=core_start,
                 prompt=prompt,
                 monitor=monitor,
             )
-            kept = self._segments_for_core(
-                window_segments, core_start, core_end, is_last=index == chunk_count - 1
-            )
-            self._append_deduplicated(merged, kept)
-            previous_context = self._context_tail(merged)
+            merged.extend(window_segments)
             self._write_checkpoint(
                 checkpoint_path,
                 source=source,
@@ -268,8 +258,8 @@ class Transcriber:
             generation: dict = {
                 "input_features": input_features,
                 "return_timestamps": True,
-                "num_beams": self.config.num_beams,
-                "condition_on_prev_tokens": True,
+                "num_beams": self._num_beams_for_language(language),
+                "condition_on_prev_tokens": False,
                 "temperature": self.config.temperatures,
                 "compression_ratio_threshold": self.config.compression_ratio_threshold,
                 "logprob_threshold": self.config.logprob_threshold,
@@ -345,6 +335,11 @@ class Transcriber:
         if language == "no":
             options["language"] = "no"
         return options
+
+    def _num_beams_for_language(self, language: str) -> int:
+        if language == "sme":
+            return self.config.sami_num_beams
+        return self.config.num_beams
 
     @staticmethod
     def _processor_options(duration: float) -> dict[str, str | bool]:
@@ -461,67 +456,10 @@ class Transcriber:
             text = str(decoded).strip()
         return [TranscriptSegment(text, offset, offset + duration)] if text else []
 
-    @staticmethod
-    def _segments_for_core(
-        segments: list[TranscriptSegment],
-        core_start: float,
-        core_end: float,
-        *,
-        is_last: bool,
-    ) -> list[TranscriptSegment]:
-        kept = []
-        for segment in segments:
-            midpoint = (segment.start + segment.end) / 2
-            in_core = core_start <= midpoint < core_end or (
-                is_last and midpoint <= core_end
-            )
-            if in_core:
-                kept.append(segment)
-        return kept
-
-    def _append_deduplicated(
-        self, existing: list[TranscriptSegment], incoming: list[TranscriptSegment]
-    ) -> None:
-        if not incoming:
-            return
-        if existing:
-            trimmed = self.remove_text_overlap(existing[-1].text, incoming[0].text)
-            incoming[0] = TranscriptSegment(trimmed, incoming[0].start, incoming[0].end)
-        existing.extend(segment for segment in incoming if segment.text.strip())
-
-    @staticmethod
-    def remove_text_overlap(previous: str, current: str, minimum_words: int = 3) -> str:
-        """Remove an exact normalized suffix/prefix overlap at a chunk boundary."""
-        previous_words = previous.split()
-        current_words = current.split()
-        maximum = min(40, len(previous_words), len(current_words))
-
-        def normalize(word: str) -> str:
-            return re.sub(r"[^\wÁČĐŊŠŽáčđŋšž]", "", word, flags=re.UNICODE).casefold()
-
-        for size in range(maximum, minimum_words - 1, -1):
-            left = [normalize(word) for word in previous_words[-size:]]
-            right = [normalize(word) for word in current_words[:size]]
-            left_text = " ".join(left)
-            right_text = " ".join(right)
-            if (
-                left == right
-                or SequenceMatcher(None, left_text, right_text).ratio() >= 0.9
-            ):
-                return " ".join(current_words[size:]).strip()
-        return current.strip()
-
-    def _context_tail(self, segments: list[TranscriptSegment]) -> str:
-        text = " ".join(segment.text for segment in segments)
-        return text[-self.config.prompt_context_chars :]
-
-    def _build_prompt(self, glossary: str, previous_context: str) -> str:
-        parts = []
-        if previous_context.strip():
-            parts.append(previous_context.strip())
-        if glossary.strip():
-            parts.append(f"Ord og navn: {glossary.strip()}")
-        return "\n".join(parts)[-self.config.prompt_context_chars :]
+    def _build_prompt(self, glossary: str) -> str:
+        if not glossary.strip():
+            return ""
+        return f"Ord og navn: {glossary.strip()}"[-self.config.prompt_context_chars :]
 
     def _normalize_audio(self, source: Path, destination: Path) -> None:
         destination.parent.mkdir(parents=True, exist_ok=True)
@@ -590,8 +528,9 @@ class Transcriber:
                 "language": language,
                 "model_name": model_name,
                 "sample_rate": self.config.sample_rate,
-                "chunk_seconds": self.config.main_chunk_seconds,
-                "overlap_seconds": self.config.overlap_seconds,
+                "segmentation_strategy": "independent-fixed-v1",
+                "segment_seconds": self.config.whisper_segment_seconds,
+                "num_beams": self._num_beams_for_language(language),
                 "chunk_count": chunk_count,
             }
             if any(payload.get(key) != value for key, value in expected.items()):
@@ -627,8 +566,9 @@ class Transcriber:
             "language": language,
             "model_name": model_name,
             "sample_rate": self.config.sample_rate,
-            "chunk_seconds": self.config.main_chunk_seconds,
-            "overlap_seconds": self.config.overlap_seconds,
+            "segmentation_strategy": "independent-fixed-v1",
+            "segment_seconds": self.config.whisper_segment_seconds,
+            "num_beams": self._num_beams_for_language(language),
             "chunk_count": chunk_count,
             "duration": duration,
             "next_index": next_index,
